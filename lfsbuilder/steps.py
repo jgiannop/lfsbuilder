@@ -8,9 +8,10 @@ disk and the boot loader):
 
   portage     make.conf, package.use, the binary package host, the profile
   world       the system brought up to the pinned repository (@world)
-  <package>   each package of the recipe, one step each, in its order
   kernel      the kernel and its initramfs
   system      time zone, locale, keymap, network, services
+  <package>   each package of the recipe, one step each, in its order
+  users       root's password, the accounts, sudo for "wheel"
 
 /etc/hostname and /etc/hosts are not written here: Docker mounts its own
 over them in every container, so they are written when the system is
@@ -148,5 +149,26 @@ def openrc_network(r: Recipe) -> str:
     return 'config_eth0="dhcp"\n'
 
 
+def users(r: Recipe) -> Step:
+    """The accounts. The hashes are set with tracing off, so they stay out of the log."""
+    script = "set -e\n"
+    for a in r.accounts:
+        groups = f" -G {shlex.quote(','.join(a.groups))}" if a.groups else ""
+        script += (f"id {a.name} >/dev/null 2>&1 || useradd -m -s /bin/bash -c {shlex.quote(a.full_name)}{groups} {a.name}\n")
+    script += "set +x\n"
+    script += f"usermod -p {shlex.quote(r.root_password)} root\n" if r.root_password else "passwd -l root >/dev/null\n"
+    for a in r.accounts:
+        script += f"usermod -p {shlex.quote(a.password)} {a.name}\n" if a.password else f"passwd -l {a.name} >/dev/null\n"
+    script += "set -x\n"
+    if r.sudo:
+        script += _file("/etc/sudoers.d/wheel", "%wheel ALL=(ALL:ALL) ALL\n") + "chmod 0440 /etc/sudoers.d/wheel\nvisudo -c\n"
+    return Step("users", "Root's password, the accounts, sudo", script)
+
+
 def all_steps(r: Recipe) -> list[Step]:
-    return [portage(r), world(), *(package(a) for a in r.packages), kernel(r), system(r)]
+    packages = list(r.packages)
+    if r.sudo and "app-admin/sudo" not in packages:
+        packages.append("app-admin/sudo")
+    # What changes least comes first, so a change rebuilds as little as it can:
+    # adding a package doesn't redo the kernel.
+    return [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages), users(r)]

@@ -40,6 +40,18 @@ mode = "dhcp"                    # or "static" with the keys below
 # gateway = "192.168.1.1"
 # dns = ["192.168.1.1"]
 
+[users]
+root_password = ""               # a hash from `python3 -m lfsbuilder password`; empty: root can't log in with a password
+sudo = true                      # app-admin/sudo; members of "wheel" may use it
+
+[[users.accounts]]
+name = "demo"
+full_name = "Demo User"
+groups = ["wheel", "audio", "video", "users"]
+# The hash of "demo": for trying the example in QEMU only. Make your own with
+# `python3 -m lfsbuilder password`; a recipe never holds a password itself.
+password = "$6$woOKfvYyg2qIitmP$uwQTom.5BvfCc80CZEQjS6ju6fOVms4TIY7fDqwNuLmUaCL81QIy8pimI6SZ10XYd6kghXygCXG4yeCkIWLPz."
+
 [output]
 format = "qemu"                  # a disk image to boot in QEMU (later: "iso", "rootfs", "docker")
 size_gb = 12

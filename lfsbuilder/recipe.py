@@ -18,6 +18,14 @@ class RecipeError(ValueError):
 
 
 @dataclasses.dataclass
+class Account:
+    name: str
+    full_name: str
+    groups: list[str]
+    password: str  # a crypt(3) hash, never the password itself; empty: locked
+
+
+@dataclasses.dataclass
 class Recipe:
     path: Path
     name: str
@@ -41,6 +49,9 @@ class Recipe:
     keymap: str
     network: dict
     output: dict
+    root_password: str
+    sudo: bool
+    accounts: list[Account]
 
     @property
     def stem(self) -> str:
@@ -62,6 +73,9 @@ _DOMAIN = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 _LOCALE = re.compile(r"^[a-z]{2,3}_[A-Z]{2}(\.[A-Za-z0-9-]+)?(@[a-z]+)?$")
 _ZONE = re.compile(r"^[A-Za-z]+(/[A-Za-z0-9_+-]+){0,2}$|^UTC$")
 _KEYMAP = re.compile(r"^[A-Za-z0-9_-]+$")
+_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+_FULL_NAME = re.compile(r"^[^:,\n]*$")
+_HASH = re.compile(r"^\$(6|5|y|2[aby])\$[./A-Za-z0-9$]{8,}$")  # sha512, sha256, yescrypt, bcrypt
 
 
 def load(path: Path) -> Recipe:
@@ -76,8 +90,8 @@ def load(path: Path) -> Recipe:
             raise RecipeError(f"[{name}] must be a table")
         return value
 
-    dist, base, use, packages, system, network, output = (
-        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output")
+    dist, base, use, packages, system, network, output, users = (
+        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users")
     )
     problems: list[str] = []
 
@@ -110,7 +124,21 @@ def load(path: Path) -> Recipe:
         keymap=str(system.get("keymap", "us")),
         network=dict(network) or {"mode": "dhcp"},
         output=dict(output) or {"format": "qemu"},
+        root_password=str(users.get("root_password", "")),
+        sudo=bool(users.get("sudo", True)),
+        accounts=[],
     )
+    raw_accounts = users.get("accounts", [])
+    if not isinstance(raw_accounts, list) or not all(isinstance(a, dict) for a in raw_accounts):
+        problems.append("users.accounts must be a list of tables ([[users.accounts]])")
+        raw_accounts = []
+    for a in raw_accounts:
+        recipe.accounts.append(Account(
+            name=str(a.get("name", "")),
+            full_name=str(a.get("full_name", "")),
+            groups=strings(a.get("groups", []), f"users.accounts {a.get('name', '')!r} groups"),
+            password=str(a.get("password", "")),
+        ))
     if not recipe.profile:
         recipe.profile = f"default/linux/amd64/23.0/{recipe.init}" if recipe.init == "systemd" else "default/linux/amd64/23.0"
 
@@ -156,6 +184,21 @@ def load(path: Path) -> Recipe:
         problems.append("network.mode must be \"dhcp\" or \"static\"")
     if recipe.output.get("format") not in ("qemu",):
         problems.append("output.format can only be \"qemu\" for now")
+    if recipe.root_password and not _HASH.match(recipe.root_password):
+        problems.append("users.root_password must be a password hash (python3 -m lfsbuilder password), not a password")
+    names = [a.name for a in recipe.accounts]
+    for a in recipe.accounts:
+        if not _USER.match(a.name) or a.name == "root":
+            problems.append(f"users.accounts: {a.name!r} isn't a user name (lower-case letters, digits, _ and -; not root)")
+        if names.count(a.name) > 1:
+            problems.append(f"users.accounts: {a.name!r} is there twice")
+        if not _FULL_NAME.match(a.full_name):
+            problems.append(f"users.accounts {a.name!r}: full_name can't hold : , or a new line")
+        for g in a.groups:
+            if not _USER.match(g):
+                problems.append(f"users.accounts {a.name!r}: {g!r} isn't a group name")
+        if a.password and not _HASH.match(a.password):
+            problems.append(f"users.accounts {a.name!r}: password must be a password hash (python3 -m lfsbuilder password), not a password")
     if problems:
         raise RecipeError(f"{path}:\n  " + "\n  ".join(problems))
     return recipe

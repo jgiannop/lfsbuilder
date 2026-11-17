@@ -4,11 +4,14 @@
     python3 -m lfsbuilder plan RECIPE      the steps the build would run, and which are done
     python3 -m lfsbuilder build RECIPE     run them in Docker, a checkpoint after each
     python3 -m lfsbuilder boot RECIPE      export the built system to a disk image and boot it in QEMU
+                     boot --console RECIPE   ... and stay in its console to log in (Ctrl-A X quits)
+    python3 -m lfsbuilder password         a password hash for the recipe's [users]
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import subprocess
 import sys
@@ -95,7 +98,25 @@ def build(r: recipes.Recipe, until: str | None) -> int:
     return runner.run(p, base, shared(r), WORK / f"build-{r.stem}" / "logs")
 
 
-def boot(r: recipes.Recipe) -> int:
+def password() -> int:
+    """Asks for a password twice and prints its SHA-512 crypt hash, made by
+    openssl in the tools image; the password goes in on its stdin, never on
+    a command line."""
+    first = getpass.getpass("password: ")
+    if first != getpass.getpass("again: "):
+        print("they differ", file=sys.stderr)
+        return 1
+    if not first:
+        print("an empty password would let anyone in; leave the hash empty instead to lock the account", file=sys.stderr)
+        return 1
+    tools()
+    result = subprocess.run(["docker", "run", "--rm", "-i", TOOLS_IMAGE, "openssl", "passwd", "-6", "-stdin"],
+                            input=first + "\n", text=True, capture_output=True, check=True)
+    print(result.stdout.strip())
+    return 0
+
+
+def boot(r: recipes.Recipe, console: bool = False) -> int:
     p = planned(r)
     if p is None:
         return 1
@@ -108,6 +129,9 @@ def boot(r: recipes.Recipe) -> int:
     kernel, initramfs = image.export(p[-1].image, r, out / "rootfs.tar", out / "boot")
     print(f"making {(out / 'disk.img').relative_to(ROOT)} ({r.output.get('size_gb', 12)} GB, sparse)", flush=True)
     image.disk(tools(), out / "rootfs.tar", out / "disk.img", int(r.output.get("size_gb", 12)))
+    if console:
+        print(f"starting it in QEMU with {kernel.name}; Ctrl-A X quits", flush=True)
+        image.console(kernel, initramfs, out / "disk.img")
     print(f"booting it in QEMU with {kernel.name}", flush=True)
     log = out / "logs" / "boot.log"
     if image.boot_test(kernel, initramfs, out / "disk.img", log):
@@ -122,12 +146,17 @@ def boot(r: recipes.Recipe) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lfsbuilder")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("password")
     for name in ("prepare", "plan", "build", "boot"):
         command = sub.add_parser(name)
         command.add_argument("recipe", type=Path)
+        if name == "boot":
+            command.add_argument("--console", action="store_true", help="stay in the system's console to log in (Ctrl-A X quits)")
         if name == "build":
             command.add_argument("--until", metavar="STEP", help="stop after this step (its name, as plan shows: portage, world, ...)")
     args = parser.parse_args(argv)
+    if args.command == "password":
+        return password()
     try:
         r = recipes.load(args.recipe)
     except recipes.RecipeError as error:
@@ -138,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "plan":
         return plan(r)
     if args.command == "boot":
-        return boot(r)
+        return boot(r, args.console)
     return build(r, args.until)
 
 

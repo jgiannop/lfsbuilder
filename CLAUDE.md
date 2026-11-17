@@ -21,19 +21,19 @@ The project started on Linux From Scratch; that work (the LFS book read from its
 
 ## Phases
 
-1. **A system that boots** (done 2026-11-17): recipe, `prepare` (stage3 + repository, checked), `build` (portage set-up, @world, packages, kernel, system configuration), `boot` (disk image, QEMU test). The example recipe builds in about 7 minutes with binary packages (the kernel step's dracut is most of it) and boots to `login:` in ~7 s under KVM. Next: root password and users, so the system can be logged into; static network and OpenRC tested.
+1. **A system that boots** (done 2026-11-17): recipe, `prepare` (stage3 + repository, checked), `build` (portage set-up, @world, packages, kernel, system configuration), `boot` (disk image, QEMU test). The example recipe builds in about 7 minutes with binary packages (the kernel step's dracut is most of it) and boots to `login:` in ~7 s under KVM. Users (`[users]`: root's password hash, `[[users.accounts]]`, sudo for wheel) added. Next: static network and OpenRC tested.
 2. **The agent**: Claude called on failure with the step, the failing command and the end of the log; proposes a fix, retries, records it with the recipe.
 3. **Distribution**: own binary package server (the binpkgs), users, root password, ISO with installer, branding, GRUB/systemd-boot.
 4. **The Qt form**: writes the recipe; shows what a choice pulls in (Portage's dependency resolution) and how long it builds.
 
 ## Layout
 
-- `lfsbuilder/recipe.py`: loads and checks a recipe (TOML, `tomllib`). Everything that ends up in a shell script or `make.conf` is checked against a pattern first.
+- `lfsbuilder/recipe.py`: loads and checks a recipe (TOML, `tomllib`). Everything that ends up in a shell script or `make.conf` is checked against a pattern first. Passwords are only ever crypt hashes (`$6$`, `$y$`, ...), made by `python3 -m lfsbuilder password` (openssl in the tools image, the password on stdin); recipes go into git. The example's `demo` user has the hash of "demo", for QEMU only.
 - `lfsbuilder/gentoo.py`: `keyring()`, `stage3()` (download, verify `.asc`), `repository()` (git fetch of one commit, `verify-commit`, `git archive` to a plain tree), `stage3_image()` (`docker import` of the stage3). gpg and git run in the tools image (`docker/host.Dockerfile`, `lfsbuilder-host:dev`).
-- `lfsbuilder/steps.py`: the steps as shell scripts written from the recipe: `portage` (make.conf, package.use, binrepos.conf, dracut config, profile), `world`, one per package, `kernel` (`gentoo-kernel-bin` with `installkernel[dracut]`), `system` (time zone, locale, keymap, network, services). /etc/hostname, hosts, resolv.conf are Docker's in a container: they are written at export.
+- `lfsbuilder/steps.py`: the steps as shell scripts written from the recipe, least-changing first (so adding a package doesn't redo the kernel): `portage` (make.conf, package.use, binrepos.conf, dracut config, profile), `world`, `kernel` (`gentoo-kernel-bin` with `installkernel[dracut]`), `system` (time zone, locale, keymap, network, services), one per package (plus `app-admin/sudo` if `users.sudo`), `users` (accounts; hashes set under `set +x` so they stay out of logs; locked when empty). /etc/hostname, hosts, resolv.conf are Docker's in a container: they are written at export.
 - `lfsbuilder/runner.py`: runs steps (`bash -l`, `set -x` with `PS4='### lfsbuilder: '` so the log shows the failing command), commits each as `lfsbuilder-build:<fingerprint>`, skips steps whose image exists, flattens images over 100 layers. Mounts: the repository read-only at /var/db/repos/gentoo, volumes `lfsbuilder-distfiles` and `lfsbuilder-binpkgs-<cpu>-<hash of flags>`. `MAKEOPTS` from `jobs` is passed in the environment (not fingerprinted).
 - `lfsbuilder/image.py`: `export()` (docker export → `rootfs.tar`, Docker's files replaced from the recipe, fstab added, kernel/initramfs copied out), `disk()` (`mke2fs -d rootfs.tar`), `boot_test()` (QEMU, waits for `login:` on the serial console).
-- `lfsbuilder/__main__.py`: `python3 -m lfsbuilder prepare|plan|build|boot RECIPE` (`build --until <step name>`). Work files in `work/` (ignored by git): `gentoo/{keys,stage3,repos}`, `build-<recipe>/{logs,boot,rootfs.tar,disk.img}`.
+- `lfsbuilder/__main__.py`: `python3 -m lfsbuilder prepare|plan|build|boot RECIPE` (`build --until <step name>`, `boot --console` to log in on the serial console, Ctrl-A X quits), `python3 -m lfsbuilder password`. Work files in `work/` (ignored by git): `gentoo/{keys,stage3,repos}`, `build-<recipe>/{logs,boot,rootfs.tar,disk.img}`.
 - `recipes/example.toml`: the example recipe.
 
 ## How to work here

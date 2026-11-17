@@ -116,9 +116,8 @@ def boot_test(kernel: Path, initramfs: Path, image: Path, log: Path, timeout: in
     return bool(_boot(kernel, initramfs, image, log, timeout * 5, kvm=False))
 
 
-def _boot(kernel: Path, initramfs: Path, image: Path, log: Path, timeout: int, kvm: bool) -> bool | None:
-    """One boot; None if KVM failed to run the machine at all."""
-    command = [
+def qemu_command(kernel: Path, initramfs: Path, image: Path, kvm: bool) -> list[str]:
+    return [
         "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-nographic", "-no-reboot",
         *(["-enable-kvm", "-cpu", "host"] if kvm else []),
         "-kernel", str(kernel), "-initrd", str(initramfs),
@@ -126,6 +125,17 @@ def _boot(kernel: Path, initramfs: Path, image: Path, log: Path, timeout: int, k
         "-drive", f"file={image},format=raw,if=virtio",
         "-nic", "user,model=virtio-net-pci",
     ]
+
+
+def console(kernel: Path, initramfs: Path, image: Path) -> None:
+    """The system in QEMU on this terminal (the serial console); Ctrl-A X quits."""
+    kvm = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    os.execvp("qemu-system-x86_64", qemu_command(kernel, initramfs, image, kvm))
+
+
+def _boot(kernel: Path, initramfs: Path, image: Path, log: Path, timeout: int, kvm: bool) -> bool | None:
+    """One boot; None if KVM failed to run the machine at all."""
+    command = qemu_command(kernel, initramfs, image, kvm)
     seen = b""
     started = time.monotonic()
     with log.open("wb") as out:
