@@ -137,3 +137,11 @@ def stage3_image(archive: Path, name: str) -> str:
         print(f"importing {archive.name} as {name}", flush=True)
         subprocess.run(["docker", "import", "-c", 'CMD ["/bin/bash"]', str(archive), name], check=True, capture_output=True)
     return name
+
+
+def password_hash(tools: Tools, password: str) -> str:
+    """The SHA-512 crypt hash of `password`, made by openssl in the tools
+    image; the password goes in on its stdin, never on a command line."""
+    result = subprocess.run(["docker", "run", "--rm", "-i", tools.image, "openssl", "passwd", "-6", "-stdin"],
+                            input=password + "\n", text=True, capture_output=True, check=True)
+    return result.stdout.strip()

@@ -11,6 +11,7 @@ disk and the boot loader):
   kernel      the kernel and its initramfs
   system      time zone, locale, keymap, network, services
   <package>   each package of the recipe, one step each, in its order
+  services    the services to start at boot (the recipe's, NetworkManager)
   users       root's password, the accounts, sudo for "wheel"
 
 /etc/hostname and /etc/hosts are not written here: Docker mounts its own
@@ -23,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import shlex
 
+from . import fixes as fixes_
 from .recipe import Recipe
 
 BINHOST = "https://distfiles.gentoo.org/releases/amd64/binpackages/23.0/{cpu}/"
@@ -38,6 +40,7 @@ class Step:
     name: str
     title: str
     script: str
+    package: str = ""  # the package a package step installs
 
 
 def _file(path: str, text: str) -> str:
@@ -69,7 +72,8 @@ def package_use(r: Recipe) -> str:
     lines = ["# Written by lfsbuilder from the recipe.",
              # The kernel's initramfs is made by dracut through installkernel (Handbook: "Installing a distribution kernel").
              "sys-kernel/installkernel dracut"]
-    lines += [f"{atom} {' '.join(flags)}" for atom, flags in r.package_use.items()]
+    # Sorted: the order they were written in (by hand or by the form) mustn't change the build.
+    lines += [f"{atom} {' '.join(flags)}" for atom, flags in sorted(r.package_use.items())]
     return "\n".join(lines) + "\n"
 
 
@@ -93,7 +97,7 @@ def world() -> Step:
 
 
 def package(atom: str) -> Step:
-    return Step(atom.replace("/", "_"), atom, f"set -e\nemerge --noreplace --verbose {shlex.quote(atom)}\n")
+    return Step(atom.replace("/", "_"), atom, f"set -e\nemerge --noreplace --verbose {shlex.quote(atom)}\n", package=atom)
 
 
 def kernel(r: Recipe) -> Step:
@@ -114,15 +118,20 @@ def system(r: Recipe) -> Step:
     if r.init == "systemd":
         script += _file("/etc/locale.conf", f"LANG={r.locale}\n")
         script += _file("/etc/vconsole.conf", f"KEYMAP={r.keymap}\n")
-        script += _file("/etc/systemd/network/50-lfsbuilder.network", network_unit(r))
-        script += "systemctl enable systemd-networkd.service systemd-resolved.service\n"
+        if r.network["manager"] == "networkd":
+            script += _file("/etc/systemd/network/50-lfsbuilder.network", network_unit(r))
+            script += "systemctl enable systemd-networkd.service\n"
+        script += "systemctl enable systemd-resolved.service\n"  # /etc/resolv.conf points at its stub
         script += "systemctl preset-all\n"
         script += "rm -f /etc/machine-id\n"  # each installed system makes its own at first boot
     else:
         script += f"eselect locale set {shlex.quote(r.locale)}\n"
+        # A login on the serial console (commented out in Gentoo's inittab): for servers and the boot test.
+        script += "sed -i -E 's|^#?s0:.*|s0:12345:respawn:/sbin/agetty -L 115200 ttyS0 vt100|' /etc/inittab\ngrep '^s0:' /etc/inittab\n"
         script += f"sed -i 's/^keymap=.*/keymap=\"{r.keymap}\"/' /etc/conf.d/keymaps\n"
-        script += _file("/etc/conf.d/net", openrc_network(r))
-        script += "ln -sf net.lo /etc/init.d/net.eth0\nrc-update add net.eth0 default\n"
+        if r.network["manager"] == "netifrc":
+            script += _file("/etc/conf.d/net", openrc_network(r))
+            script += "ln -sf net.lo /etc/init.d/net.eth0\nrc-update add net.eth0 default\n"
     return Step("system", "Time zone, locale, keymap, network", script)
 
 
@@ -165,10 +174,40 @@ def users(r: Recipe) -> Step:
     return Step("users", "Root's password, the accounts, sudo", script)
 
 
+def services(r: Recipe) -> Step | None:
+    """The services to start at boot: the recipe's, and what its choices
+    bring (NetworkManager). After the packages, since a service exists only
+    once its package is installed."""
+    names = list(r.services)
+    if r.network["manager"] == "networkmanager" and "NetworkManager" not in names:
+        names.insert(0, "NetworkManager")
+    if not names:
+        return None
+    if r.init == "systemd":
+        script = "set -e\n" + "".join(f"systemctl enable {shlex.quote(n)}\n" for n in names)
+    else:
+        script = "set -e\n" + "".join(f"rc-update add {shlex.quote(n)} default\n" for n in names)
+    return Step("services", "Services started at boot: " + ", ".join(names), script)
+
+
 def all_steps(r: Recipe) -> list[Step]:
     packages = list(r.packages)
+    if r.network["manager"] == "networkmanager" and "net-misc/networkmanager" not in packages:
+        packages.append("net-misc/networkmanager")
     if r.sudo and "app-admin/sudo" not in packages:
         packages.append("app-admin/sudo")
+    enabled = services(r)
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
-    return [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages), users(r)]
+    steps = [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages),
+             *([enabled] if enabled else []), users(r)]
+    # Each fix goes in at the start of the step it was found in (fixes.py).
+    names = {s.name for s in steps}
+    for fix in r.fixes:
+        if fix.step not in names:
+            raise fixes_.FixError(f"a fix is for step {fix.step!r}, which this recipe doesn't have ({', '.join(sorted(names))})")
+    for step in steps:
+        mine = [f for f in r.fixes if f.step == step.name]
+        if mine:
+            step.script = "set -e\n" + fixes_.script(mine) + step.script.removeprefix("set -e\n")
+    return steps

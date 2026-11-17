@@ -24,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -31,7 +32,7 @@ from pathlib import Path
 from .steps import Step
 
 IMAGE = "lfsbuilder-build"  # every checkpoint is IMAGE:<fingerprint>
-CONTAINER = "lfsbuilder-step"
+CONTAINER = "lfsbuilder-step"  # + the step's fingerprint, so two builds at once never touch each other's container
 FINGERPRINT_VERSION = "gentoo-1"  # raised when the way steps are run changes, so old images aren't reused
 MAX_LAYERS = 100  # overlay2 stops near 125; a deeper image is flattened into one layer
 MARKER = "### lfsbuilder:"
@@ -111,19 +112,38 @@ def _script(step: Step) -> str:
 
 
 def _run_one(p: Planned, parent: str, shared: Shared, logs: Path) -> bool:
-    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+    container = f"{CONTAINER}-{p.fingerprint[:12]}"
+    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     with (logs / p.log_name).open("w") as out:
         result = subprocess.run(
-            ["docker", "run", "--name", CONTAINER, "-w", "/", *shared.args(), parent, "/bin/bash", "-l", "-c", _script(p.step)],
+            ["docker", "run", "--name", container, "-w", "/", *shared.args(), parent, "/bin/bash", "-l", "-c", _script(p.step)],
             stdout=out, stderr=subprocess.STDOUT,
         )
     try:
         if result.returncode != 0:
+            _keep_portage_log(container, logs / p.log_name)
             return False
-        _docker("commit", "-c", f"LABEL lfsbuilder.step={p.step.name}", "-c", 'CMD ["/bin/bash"]', CONTAINER, p.image)
+        _docker("commit", "-c", f"LABEL lfsbuilder.step={p.step.name}", "-c", 'CMD ["/bin/bash"]', container, p.image)
         return True
     finally:
-        subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+
+
+_PORTAGE_LOG = re.compile(r"'(/var/tmp/portage/[^']+/temp/build\.log)'")
+
+
+def portage_log(step_log: Path) -> Path:
+    return step_log.with_suffix(".portage.log")
+
+
+def _keep_portage_log(container: str, step_log: Path) -> None:
+    """Portage's own log of a package that failed (named in the step's log),
+    copied out of the container before it goes."""
+    found = _PORTAGE_LOG.findall(step_log.read_text(errors="replace"))
+    target = portage_log(step_log)
+    target.unlink(missing_ok=True)
+    if found:
+        subprocess.run(["docker", "cp", f"{container}:{found[-1]}", str(target)], capture_output=True)
 
 
 def failure_report(p: Planned, logs: Path, lines: int = 40) -> str:
@@ -137,7 +157,8 @@ def failure_report(p: Planned, logs: Path, lines: int = 40) -> str:
     return "\n".join(out)
 
 
-def run(planned: list[Planned], base: str, shared: Shared, logs: Path) -> int:
+def run(planned: list[Planned], base: str, shared: Shared, logs: Path, quiet: bool = False) -> Planned | None:
+    """Runs the steps not done yet; returns the one that failed, or None."""
     logs.mkdir(parents=True, exist_ok=True)
     for volume in (shared.distfiles, shared.binpkgs):
         _docker("volume", "create", volume)
@@ -145,7 +166,8 @@ def run(planned: list[Planned], base: str, shared: Shared, logs: Path) -> int:
     for p in planned:
         name = f"{p.number:>3}  {p.step.title[:56]:56}"
         if image_exists(p.image):
-            print(f"{name}  done before", flush=True)
+            if not quiet:
+                print(f"{name}  done before", flush=True)
             parent = p.image
             continue
         if parent != base and _layers(parent) > MAX_LAYERS:
@@ -163,8 +185,9 @@ def run(planned: list[Planned], base: str, shared: Shared, logs: Path) -> int:
         if not ok:
             print(f"  FAILED after {took:.0f}s\n")
             print(failure_report(p, logs))
-            return 1
+            return p
         print(f"  {took:.0f}s", flush=True)
         parent = p.image
-    print(f"\nthe last checkpoint: {parent}")
-    return 0
+    if not quiet:
+        print(f"\nthe last checkpoint: {parent}")
+    return None

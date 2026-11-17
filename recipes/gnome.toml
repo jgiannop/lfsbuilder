@@ -1,0 +1,62 @@
+# A desktop: GNOME with its login screen (GDM), Firefox, NetworkManager.
+#
+# A recipe: everything that makes this system this system. The build reads
+# only this file and what it pins: a Gentoo stage3 and a commit of the Gentoo
+# repository, both checked against Gentoo's signing keys.
+# (Later, the form writes it; for now it is written by hand.)
+
+[distribution]
+name = "Example GNOME"
+version = "0.1"
+
+[base]
+init = "systemd"                 # or "openrc"
+stage3 = "20261115T170104Z"      # the stage3 build, as Gentoo's autobuilds name it
+repository = "e19f4a84f0138c2703c3d36e5e6b0f58e6fd4aeb"  # a commit of github.com/gentoo-mirror/gentoo
+profile = "default/linux/amd64/23.0/desktop/gnome/systemd"
+cpu = "x86-64"                   # or "x86-64-v3" (2015+ processors: AVX2); -march and Gentoo's binary packages follow it
+cflags = "-O2 -pipe"             # -march=<cpu> is added
+binary_packages = true           # Gentoo's official binary packages where they match; the rest is compiled
+kernel = "gentoo-kernel-bin"     # or "gentoo-kernel" (compiled here)
+jobs = 0                         # make's parallel jobs; 0 = as many as the processors
+
+[use]
+global = []                      # USE flags for every package, e.g. ["-bluetooth", "pulseaudio"]
+
+[use.packages]                   # USE flags for one package
+"media-libs/libvpx" = ["postproc"]   # Firefox needs it (emerge said so)
+"net-libs/ngtcp2" = ["gnutls"]       # Gentoo's binary Samba (for GNOME's settings) was built against it
+
+[packages]
+install = ["gnome-base/gnome-light", "gnome-base/gdm", "www-client/firefox", "app-editors/nano"]
+
+[system]
+hostname = "gnome"
+domain = "localdomain"
+locale = "en_US.UTF-8"
+timezone = "Europe/Athens"
+keymap = "us"
+
+[network]
+manager = "networkmanager"       # what desktops use; "networkd" for servers
+mode = "dhcp"
+
+[services]
+enable = ["gdm"]                 # the graphical login
+
+[users]
+root_password = ""               # a hash from `python3 -m lfsbuilder password`; empty: root can't log in with a password
+sudo = true                      # app-admin/sudo; members of "wheel" may use it
+
+[[users.accounts]]
+name = "demo"
+full_name = "Demo User"
+groups = ["wheel", "audio", "video", "users"]
+# The hash of "demo": for trying the example in QEMU only. Make your own with
+# `python3 -m lfsbuilder password`; a recipe never holds a password itself.
+password = "$6$woOKfvYyg2qIitmP$uwQTom.5BvfCc80CZEQjS6ju6fOVms4TIY7fDqwNuLmUaCL81QIy8pimI6SZ10XYd6kghXygCXG4yeCkIWLPz."
+
+[output]
+format = "qemu"                  # a disk image to boot in QEMU (later: "iso", "rootfs", "docker")
+size_gb = 30
+filesystem = "ext4"

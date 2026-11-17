@@ -8,6 +8,7 @@ Gentoo repository, and says how the system is configured and what is on it.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -52,6 +53,8 @@ class Recipe:
     root_password: str
     sudo: bool
     accounts: list[Account]
+    services: list[str]
+    fixes: list = dataclasses.field(default_factory=list)  # fixes.Fix, from <name>.fixes.toml beside the recipe
 
     @property
     def stem(self) -> str:
@@ -73,6 +76,7 @@ _DOMAIN = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 _LOCALE = re.compile(r"^[a-z]{2,3}_[A-Z]{2}(\.[A-Za-z0-9-]+)?(@[a-z]+)?$")
 _ZONE = re.compile(r"^[A-Za-z]+(/[A-Za-z0-9_+-]+){0,2}$|^UTC$")
 _KEYMAP = re.compile(r"^[A-Za-z0-9_-]+$")
+_SERVICE = re.compile(r"^[A-Za-z0-9@._-]+$")
 _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FULL_NAME = re.compile(r"^[^:,\n]*$")
 _HASH = re.compile(r"^\$(6|5|y|2[aby])\$[./A-Za-z0-9$]{8,}$")  # sha512, sha256, yescrypt, bcrypt
@@ -90,8 +94,8 @@ def load(path: Path) -> Recipe:
             raise RecipeError(f"[{name}] must be a table")
         return value
 
-    dist, base, use, packages, system, network, output, users = (
-        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users")
+    dist, base, use, packages, system, network, output, users, services = (
+        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users", "services")
     )
     problems: list[str] = []
 
@@ -127,7 +131,9 @@ def load(path: Path) -> Recipe:
         root_password=str(users.get("root_password", "")),
         sudo=bool(users.get("sudo", True)),
         accounts=[],
+        services=strings(services.get("enable", []), "services.enable"),
     )
+    recipe.network.setdefault("manager", "networkd" if recipe.init == "systemd" else "netifrc")
     raw_accounts = users.get("accounts", [])
     if not isinstance(raw_accounts, list) or not all(isinstance(a, dict) for a in raw_accounts):
         problems.append("users.accounts must be a list of tables ([[users.accounts]])")
@@ -182,6 +188,14 @@ def load(path: Path) -> Recipe:
         problems.append(f"system.keymap {recipe.keymap!r} isn't a keymap name")
     if recipe.network.get("mode") not in ("dhcp", "static"):
         problems.append("network.mode must be \"dhcp\" or \"static\"")
+    managers = ("networkd", "networkmanager") if recipe.init == "systemd" else ("netifrc", "networkmanager")
+    if recipe.network["manager"] not in managers:
+        problems.append(f"network.manager must be one of {', '.join(managers)} with {recipe.init}")
+    if recipe.network["manager"] == "networkmanager" and recipe.network.get("mode") == "static":
+        problems.append("network.mode = \"static\" is written for networkd and netifrc only, so far")
+    for service in recipe.services:
+        if not _SERVICE.match(service):
+            problems.append(f"services.enable: {service!r} isn't a service name")
     if recipe.output.get("format") not in ("qemu",):
         problems.append("output.format can only be \"qemu\" for now")
     if recipe.root_password and not _HASH.match(recipe.root_password):
@@ -201,4 +215,72 @@ def load(path: Path) -> Recipe:
             problems.append(f"users.accounts {a.name!r}: password must be a password hash (python3 -m lfsbuilder password), not a password")
     if problems:
         raise RecipeError(f"{path}:\n  " + "\n  ".join(problems))
+    from . import fixes  # (fixes doesn't import recipe; this keeps the two apart)
+    try:
+        recipe.fixes = fixes.load(path)
+    except fixes.FixError as error:
+        raise RecipeError(str(error)) from error
     return recipe
+
+
+def _s(value: str) -> str:
+    """A TOML string (JSON's escapes are TOML's)."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _list(values: list[str]) -> str:
+    return "[" + ", ".join(_s(v) for v in values) + "]"
+
+
+def dump(r: Recipe) -> str:
+    """The recipe as TOML, as load() reads it: what the form saves."""
+    out = [
+        "# A recipe: everything that makes this system this system (written by lfsbuilder).",
+        "",
+        "[distribution]",
+        f"name = {_s(r.name)}",
+        f"version = {_s(r.version)}",
+        "",
+        "[base]",
+        f"init = {_s(r.init)}",
+        f"stage3 = {_s(r.stage3)}",
+        f"repository = {_s(r.repository)}",
+        f"profile = {_s(r.profile)}",
+        f"cpu = {_s(r.cpu)}",
+        f"cflags = {_s(r.cflags)}",
+        f"binary_packages = {str(r.binary_packages).lower()}",
+        f"kernel = {_s(r.kernel)}",
+        f"jobs = {r.jobs}",
+        "",
+        "[use]",
+        f"global = {_list(r.use)}",
+        "",
+        "[use.packages]",
+        *(f"{_s(atom)} = {_list(flags)}" for atom, flags in r.package_use.items()),
+        "",
+        "[packages]",
+        f"install = {_list(r.packages)}",
+        "",
+        "[system]",
+        f"hostname = {_s(r.hostname)}",
+        f"domain = {_s(r.domain)}",
+        f"locale = {_s(r.locale)}",
+        f"timezone = {_s(r.timezone)}",
+        f"keymap = {_s(r.keymap)}",
+        "",
+        "[network]",
+        *(f"{key} = {_list(value) if isinstance(value, list) else _s(str(value))}" for key, value in r.network.items()),
+        "",
+        "[services]",
+        f"enable = {_list(r.services)}",
+        "",
+        "[users]",
+        f"root_password = {_s(r.root_password)}",
+        f"sudo = {str(r.sudo).lower()}",
+    ]
+    for a in r.accounts:
+        out += ["", "[[users.accounts]]", f"name = {_s(a.name)}", f"full_name = {_s(a.full_name)}",
+                f"groups = {_list(a.groups)}", f"password = {_s(a.password)}"]
+    out += ["", "[output]"]
+    out += [f"{key} = {value if isinstance(value, int) else _s(str(value))}" for key, value in r.output.items()]
+    return "\n".join(out) + "\n"

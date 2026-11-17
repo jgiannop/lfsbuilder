@@ -7,7 +7,8 @@ and initramfs are taken out of /boot on the way, for QEMU to start directly.
 
 The disk image is made from the tar by mke2fs (-d), in the tools image,
 without loop devices or root; the owners come from the tar. The boot test
-starts it in QEMU and waits for the login prompt on the serial console.
+starts it in QEMU, waits for the login prompt on the serial console, and
+saves a picture of the screen (a desktop's login screen, if it has one).
 """
 
 from __future__ import annotations
@@ -16,9 +17,12 @@ import io
 import os
 import re
 import selectors
+import socket
+import struct
 import subprocess
 import tarfile
 import time
+import zlib
 from pathlib import Path
 
 from .recipe import Recipe
@@ -97,31 +101,42 @@ def disk(tools, rootfs: Path, out: Path, size_gb: int) -> None:
 
 
 KVM_FAILED = b"KVM: entry failed"
+MEMORY_MB = 4096  # a desktop needs more than 2 GB
 
 
-def boot_test(kernel: Path, initramfs: Path, image: Path, log: Path, timeout: int = 300) -> bool:
+def boot_test(kernel: Path, initramfs: Path, image: Path, log: Path, screenshot: Path,
+              timeout: int = 300, settle: int = 45) -> bool:
     """Starts the disk in QEMU and waits for the login prompt on the serial
-    console. True if it comes; the console's output is in `log`.
+    console. True if it comes; the console's output is in `log`. Then, after
+    `settle` seconds (a display manager starts after the serial login), a
+    picture of the screen is saved as `screenshot` (PNG).
 
     KVM is used when /dev/kvm is there. If the virtual machine can't even
     start under it (another hypervisor, such as a running VirtualBox VM,
     holding the processor's VT-x), the test runs again without KVM: slower,
     but the answer is the same."""
     if os.access("/dev/kvm", os.R_OK | os.W_OK):
-        result = _boot(kernel, initramfs, image, log, timeout, kvm=True)
+        result = _boot(kernel, initramfs, image, log, screenshot, timeout, settle, kvm=True)
         if result is not None:
             return result
         print("KVM can't start the virtual machine (is VirtualBox or another hypervisor running?);"
               " trying again without KVM, which is slower", flush=True)
-    return bool(_boot(kernel, initramfs, image, log, timeout * 5, kvm=False))
+    return bool(_boot(kernel, initramfs, image, log, screenshot, timeout * 5, settle * 5, kvm=False))
 
 
-def qemu_command(kernel: Path, initramfs: Path, image: Path, kvm: bool) -> list[str]:
+def qemu_command(kernel: Path, initramfs: Path, image: Path, kvm: bool, monitor: Path | None = None) -> list[str]:
+    """With `monitor`, a virtual graphics card (no window) and QEMU's monitor
+    on that socket, for screenshots; without, the serial console only."""
+    screen = (["-display", "none", "-vga", "virtio", "-serial", "stdio", "-monitor", f"unix:{monitor},server,nowait"]
+              if monitor else ["-nographic"])
     return [
-        "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-nographic", "-no-reboot",
+        "qemu-system-x86_64", "-m", str(MEMORY_MB), "-smp", "2", "-no-reboot", *screen,
         *(["-enable-kvm", "-cpu", "host"] if kvm else []),
         "-kernel", str(kernel), "-initrd", str(initramfs),
-        "-append", "root=/dev/vda rw console=ttyS0 panic=-1",
+        # The last console= is /dev/console (systemd's messages); the screen gets the kernel's too.
+        # net.ifnames=0: the network card is eth0, as a recipe's static settings name it (the
+        # installer will have to deal with names on real hardware).
+        "-append", "root=/dev/vda rw console=tty0 console=ttyS0 net.ifnames=0 panic=-1",
         "-drive", f"file={image},format=raw,if=virtio",
         "-nic", "user,model=virtio-net-pci",
     ]
@@ -133,29 +148,80 @@ def console(kernel: Path, initramfs: Path, image: Path) -> None:
     os.execvp("qemu-system-x86_64", qemu_command(kernel, initramfs, image, kvm))
 
 
-def _boot(kernel: Path, initramfs: Path, image: Path, log: Path, timeout: int, kvm: bool) -> bool | None:
+def _boot(kernel: Path, initramfs: Path, image: Path, log: Path, screenshot: Path,
+          timeout: int, settle: int, kvm: bool) -> bool | None:
     """One boot; None if KVM failed to run the machine at all."""
-    command = qemu_command(kernel, initramfs, image, kvm)
+    monitor = log.with_name("qemu-monitor.sock")
+    monitor.unlink(missing_ok=True)
+    command = qemu_command(kernel, initramfs, image, kvm, monitor)
     seen = b""
     started = time.monotonic()
+    logged_in_at = None
     with log.open("wb") as out:
         qemu = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         selector = selectors.DefaultSelector()
         selector.register(qemu.stdout, selectors.EVENT_READ)
         try:
-            while time.monotonic() - started < timeout:
-                if not selector.select(timeout=5):
+            while time.monotonic() - started < timeout or logged_in_at:
+                if logged_in_at and time.monotonic() - logged_in_at > settle:
+                    _screendump(monitor, screenshot)
+                    return True
+                if not selector.select(timeout=2):
                     continue
-                chunk = os.read(qemu.stdout.fileno(), 65536)
+                chunk = os.read(qemu.stdout.fileno(), 65536)  # read on, or QEMU's serial blocks
                 if not chunk:
                     break  # QEMU stopped (a panic, with -no-reboot)
                 out.write(chunk)
                 seen = (seen + chunk)[-4096:]
-                if b"login:" in seen:
-                    return True
+                if logged_in_at is None and b"login:" in seen:
+                    logged_in_at = time.monotonic()
                 if kvm and KVM_FAILED in seen:
                     return None
             return False
         finally:
             qemu.kill()
             qemu.wait()
+            monitor.unlink(missing_ok=True)
+
+
+def _screendump(monitor: Path, png: Path) -> None:
+    """QEMU's screendump (a PPM file) through the monitor, saved as PNG."""
+    ppm = png.with_suffix(".ppm")
+    ppm.unlink(missing_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(str(monitor))
+        s.sendall(f"screendump {ppm}\n".encode())
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not (ppm.exists() and ppm.stat().st_size > 0):
+            time.sleep(0.5)
+        time.sleep(1)  # let QEMU finish writing it
+    png.write_bytes(ppm_to_png(ppm.read_bytes()))
+    ppm.unlink()
+
+
+def ppm_to_png(data: bytes) -> bytes:
+    """A binary PPM (P6, 8 bits) as a PNG, with the standard library only."""
+    fields, pos = [], 0
+    while len(fields) < 4:
+        while data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b"#":
+            pos = data.index(b"\n", pos) + 1
+            continue
+        end = pos
+        while not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[pos:end])
+        pos = end
+    magic, width, height, maxval = fields[0], int(fields[1]), int(fields[2]), int(fields[3])
+    if magic != b"P6" or maxval != 255:
+        raise ValueError("not an 8-bit binary PPM")
+    pixels = data[pos + 1:]
+    stride = width * 3
+    raw = b"".join(b"\x00" + pixels[y * stride:(y + 1) * stride] for y in range(height))
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
