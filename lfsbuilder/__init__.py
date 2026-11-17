@@ -1,6 +1,6 @@
-"""lfsbuilder: a reproducible, customizable Linux From Scratch build.
+"""lfsbuilder: a reproducible, customizable Linux distribution built on Gentoo.
 
-A recipe (recipes/*.toml) says what the system is to be; the build reads only
-the recipe, the LFS book it names, and the sources the book lists, and runs
-every step inside Docker. See README.md.
+A recipe (recipes/*.toml) says what the system is to be; it pins a Gentoo
+stage3 and a commit of the Gentoo repository, and every step of the build
+runs inside Docker. See README.md.
 """

@@ -1,7 +1,8 @@
 """The recipe: one TOML file that says what the system is to be.
 
-The build reads nothing else about the user's wishes, so a recipe (with the
-lock file a build writes next to it) is the whole description of a system.
+The build reads nothing else about the user's wishes, so a recipe is the
+whole description of a system: it pins a Gentoo stage3 and a commit of the
+Gentoo repository, and says how the system is configured and what is on it.
 """
 
 from __future__ import annotations
@@ -21,36 +22,46 @@ class Recipe:
     path: Path
     name: str
     version: str
-    book: str
     init: str
+    stage3: str
+    repository: str
+    profile: str
+    cpu: str
+    cflags: str
+    binary_packages: bool
+    kernel: str
     jobs: int
-    run_tests: bool
+    use: list[str]
+    package_use: dict[str, list[str]]
+    packages: list[str]
     hostname: str
     domain: str
     locale: str
     timezone: str
     keymap: str
-    paper_size: str
     network: dict
     output: dict
 
-    def values(self) -> dict[str, str]:
-        """What the book's own placeholders (<replaceable>) become, by their text."""
-        language, _, charmap = self.locale.partition(".")
-        return {
-            "<lfs>": self.hostname,
-            "<FQDN>": f"{self.hostname}.{self.domain}",
-            "<Your Domain Name>": self.domain,
-            "<ll>_<CC>.<charmap><@modifiers>": self.locale,
-            "<xxx>": self.timezone,
-            "<paper_size>": self.paper_size,
-            "<your name here>": self.name,
-        }
+    @property
+    def stem(self) -> str:
+        return self.path.stem
 
 
+INITS = ("systemd", "openrc")
+CPUS = ("x86-64", "x86-64-v3")
+KERNELS = ("gentoo-kernel-bin", "gentoo-kernel")
+
+_STAGE3 = re.compile(r"^\d{8}T\d{6}Z$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_ATOM = re.compile(r"^[a-z0-9][a-z0-9+_.-]*/[A-Za-z0-9+_][A-Za-z0-9+_.-]*$")  # category/package
+_FLAG = re.compile(r"^-?[A-Za-z0-9][A-Za-z0-9+_@.-]*$")
+_PROFILE = re.compile(r"^[a-z0-9][a-z0-9._/-]*$")
+_CFLAGS = re.compile(r"^[A-Za-z0-9 =_.,+-]*$")  # no quotes or shell characters: it goes into make.conf
 _HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_DOMAIN = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 _LOCALE = re.compile(r"^[a-z]{2,3}_[A-Z]{2}(\.[A-Za-z0-9-]+)?(@[a-z]+)?$")
 _ZONE = re.compile(r"^[A-Za-z]+(/[A-Za-z0-9_+-]+){0,2}$|^UTC$")
+_KEYMAP = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def load(path: Path) -> Recipe:
@@ -59,45 +70,88 @@ def load(path: Path) -> Recipe:
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise RecipeError(f"{path}: {error}") from error
 
-    def section(name: str) -> dict:
-        value = data.get(name, {})
+    def section(name: str, within: dict | None = None) -> dict:
+        value = (data if within is None else within).get(name, {})
         if not isinstance(value, dict):
             raise RecipeError(f"[{name}] must be a table")
         return value
 
-    dist, base, system, network, output = (section(n) for n in ("distribution", "base", "system", "network", "output"))
+    dist, base, use, packages, system, network, output = (
+        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output")
+    )
+    problems: list[str] = []
+
+    def strings(value, where: str) -> list[str]:
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            problems.append(f"{where} must be a list of strings")
+            return []
+        return value
+
     recipe = Recipe(
         path=path,
-        name=str(dist.get("name", "LFS")),
+        name=str(dist.get("name", "Gentoo")),
         version=str(dist.get("version", "0.1")),
-        book=str(base.get("book", "")),
         init=str(base.get("init", "systemd")),
+        stage3=str(base.get("stage3", "")),
+        repository=str(base.get("repository", "")),
+        profile=str(base.get("profile", "")),
+        cpu=str(base.get("cpu", "x86-64")),
+        cflags=str(base.get("cflags", "-O2 -pipe")),
+        binary_packages=bool(base.get("binary_packages", True)),
+        kernel=str(base.get("kernel", "gentoo-kernel-bin")),
         jobs=int(base.get("jobs", 0)),
-        run_tests=bool(base.get("run_tests", False)),
-        hostname=str(system.get("hostname", "lfs")),
+        use=strings(use.get("global", []), "use.global"),
+        package_use={str(k): strings(v, f"use.packages.{k}") for k, v in section("packages", use).items()},
+        packages=strings(packages.get("install", []), "packages.install"),
+        hostname=str(system.get("hostname", "gentoo")),
         domain=str(system.get("domain", "localdomain")),
         locale=str(system.get("locale", "en_US.UTF-8")),
         timezone=str(system.get("timezone", "UTC")),
         keymap=str(system.get("keymap", "us")),
-        paper_size=str(system.get("paper_size", "A4")),
         network=dict(network) or {"mode": "dhcp"},
         output=dict(output) or {"format": "qemu"},
     )
-    problems = []
-    if not re.fullmatch(r"\d+\.\d+(-rc\d+)?", recipe.book):
-        problems.append(f"base.book must be a book version like \"13.1\", not {recipe.book!r}")
-    if recipe.init not in ("systemd", "sysv"):
-        problems.append(f"base.init must be \"systemd\" or \"sysv\", not {recipe.init!r}")
+    if not recipe.profile:
+        recipe.profile = f"default/linux/amd64/23.0/{recipe.init}" if recipe.init == "systemd" else "default/linux/amd64/23.0"
+
+    if recipe.init not in INITS:
+        problems.append(f"base.init must be one of {', '.join(INITS)}, not {recipe.init!r}")
+    if not _STAGE3.match(recipe.stage3):
+        problems.append(f"base.stage3 must name a stage3 build like \"20261115T170104Z\", not {recipe.stage3!r}")
+    if not _COMMIT.match(recipe.repository):
+        problems.append(f"base.repository must be a full commit id (40 hex digits), not {recipe.repository!r}")
+    if not _PROFILE.match(recipe.profile):
+        problems.append(f"base.profile {recipe.profile!r} isn't a profile path")
+    if recipe.cpu not in CPUS:
+        problems.append(f"base.cpu must be one of {', '.join(CPUS)}, not {recipe.cpu!r}")
+    if not _CFLAGS.match(recipe.cflags) or "-march" in recipe.cflags:
+        problems.append("base.cflags may hold compiler options only (no quotes; -march comes from base.cpu)")
+    if recipe.kernel not in KERNELS:
+        problems.append(f"base.kernel must be one of {', '.join(KERNELS)}, not {recipe.kernel!r}")
     if recipe.jobs < 0:
         problems.append("base.jobs can't be below 0")
+    for flag in recipe.use:
+        if not _FLAG.match(flag):
+            problems.append(f"use.global: {flag!r} isn't a USE flag")
+    for atom, flags in recipe.package_use.items():
+        if not _ATOM.match(atom):
+            problems.append(f"use.packages: {atom!r} isn't a package (category/name)")
+        for flag in flags:
+            if not _FLAG.match(flag):
+                problems.append(f"use.packages.{atom}: {flag!r} isn't a USE flag")
+    for atom in recipe.packages:
+        if not _ATOM.match(atom):
+            problems.append(f"packages.install: {atom!r} isn't a package (category/name)")
     if not _HOSTNAME.match(recipe.hostname):
         problems.append(f"system.hostname {recipe.hostname!r} isn't a host name (lower-case letters, digits and -)")
+    if not _DOMAIN.match(recipe.domain):
+        problems.append(f"system.domain {recipe.domain!r} isn't a domain name")
     if not _LOCALE.match(recipe.locale):
         problems.append(f"system.locale {recipe.locale!r} isn't a locale like en_US.UTF-8")
     if not _ZONE.match(recipe.timezone):
         problems.append(f"system.timezone {recipe.timezone!r} isn't a time zone like Europe/Athens")
-    if recipe.paper_size not in ("A4", "letter"):
-        problems.append("system.paper_size must be \"A4\" or \"letter\"")
+    if not _KEYMAP.match(recipe.keymap):
+        problems.append(f"system.keymap {recipe.keymap!r} isn't a keymap name")
     if recipe.network.get("mode") not in ("dhcp", "static"):
         problems.append("network.mode must be \"dhcp\" or \"static\"")
     if recipe.output.get("format") not in ("qemu",):

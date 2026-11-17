@@ -4,41 +4,41 @@ Guidance for Claude Code in this repository.
 
 ## What this is
 
-lfsbuilder builds a **reproducible, customizable Linux From Scratch system as the base for the owner's own distribution**. A recipe file says what the system is; the build reads only the recipe, the LFS book it names and the sources the book lists, and runs in Docker. Later a Qt form with checkboxes writes the recipe. Repository: https://github.com/jgiannop/lfsbuilder (branch `master`).
+lfsbuilder is a **Linux distribution builder on Gentoo**: a recipe file says what the system is (init system, CPU level, compiler flags, USE flags, packages, language, network, output), and the build turns it into a system, in Docker, reproducibly. Later a Qt form with checkboxes writes the recipe, and the output becomes the owner's own distribution (ISO, installer, branding, a binary package server for updates). Repository: https://github.com/jgiannop/lfsbuilder (branch `master`). The name stays for now (owner's decision).
+
+The project started on Linux From Scratch; that work (the LFS book read from its XML, the sources fetched, chapters 4–8 run in Docker) is on the branch `lfs`, kept for reference.
 
 ## Decisions taken (with the owner)
 
-- **The book drives, Claude repairs.** Commands come from the LFS book's XML source (git `https://git.linuxfromscratch.org/lfs.git`, tag `r<version>`), never retyped by an AI. Claude is only called when a step fails or a decision is needed, and its fixes are stored as patches/overrides with the recipe so the next build is reproducible without it. Claude never reads whole build logs (they are gigabytes): only the failing step and the end of its log.
-- **LFS 13.1, systemd edition** by default (`init` in the recipe can be `sysv`). systemd because GNOME and most desktop software need it.
-- **Docker as the build host** (`docker/host.Dockerfile`, Debian 13 with LFS chapter 2's requirements, `docbook-xml` for resolving the book). Chapters 5–6 run as an unprivileged user in it.
-- **Chapter 7's chroot without `--privileged`**: import the half-built `$LFS` tree as a Docker image and continue chapters 7–8 in a container of it (Docker supplies /dev, /proc, /sys). A `--privileged` container is not a security boundary, and an agent running commands it chose must be sandboxed; if a step really needs privileges, it goes in a VM instead.
-- **Checkpoints after every package**, so a failure restarts from the last good package. Later: a cache keyed by a fingerprint of each package's inputs, so changing one checkbox rebuilds only what depends on it.
-- **Making it bootable**: test-boot in QEMU with the kernel given directly; GRUB and a real disk image need loop devices, so that final step goes in a VM or uses tools that don't need them.
-- **A package manager is needed for a real distribution** (updates): each package installed into its own DESTDIR and packed; reuse an existing manager (pacman, xbps or dpkg) rather than writing one. Phase 3.
-- **The book's `<replaceable>` placeholders** are filled from the recipe (`Recipe.values()`); steps where the book only gives an example the recipe can't fill (static network, fstab partitions, GRUB) get versions written by lfsbuilder from the recipe and the output format. That override mechanism is next.
+- **Gentoo, not LFS, as the base** (2026-11-17): Portage gives dependency resolution, updates and binary packages; USE flags are the form's checkboxes; Gentoo's official binary packages make builds fast; user patches (`/etc/portage/patches`) are where the agent's fixes go. The price: the start is Gentoo's prebuilt stage3, and the result is a Gentoo derivative (rebranded, per Gentoo's name and logo guidelines).
+- **Everything pinned and checked**: the recipe names a stage3 build (date) and a commit of `github.com/gentoo-mirror/gentoo` (the repository with its metadata cache, every commit signed). The stage3 must be signed by Release Engineering's automated key `13EBBDBEDE7A12775DFDB1BABB572E0E2D182910`, the commit by the repository mirror key `EF9538C9E8E64311A52CDEDFA13D0EF1914E7A72`; the fingerprints are in `gentoo.py` and decide (the key file from qa-reports.gentoo.org is only where the keys come from). Gentoo deletes old stage3s after some months: the copies in `work/gentoo/` keep old recipes buildable (later: an archive the owner chooses).
+- **systemd by default** (GNOME needs it); `openrc` is a recipe option (written, not yet tested).
+- **Gentoo's binary packages on by default**, required to be signed (`verify-signature = true` in `binrepos.conf`; not `FEATURES=binpkg-request-signature`, which also rejects our own unsigned packages). A package is compiled when its USE flags differ. Custom `cflags` don't stop binary packages being used: for compiler flags to apply everywhere, `binary_packages = false`.
+- **Docker as the build host, without `--privileged`**: a `--privileged` container is not a security boundary, and an agent running commands it chose must be sandboxed. Portage's namespace sandboxes are off (they need unshare); its LD_PRELOAD sandbox stays.
+- **Checkpoints after every step** as Docker images named by a fingerprint (hash chain of the stage3's SHA512, the repository commit and every step's script); each package of the recipe is its own step. Portage's binary packages (`buildpkg`) in a volume per CPU level and flags are the package-level cache.
+- **The agent repairs, the recipe stays the truth**: Claude is only called when a step fails or a decision is needed, with the failing command and the end of the log, never whole logs (gigabytes); its fixes are stored with the recipe (USE changes, `package.accept_keywords`, user patches) so the next build is reproducible without it.
+- **Making it bootable**: QEMU with the kernel and initramfs given directly; the disk image is made by `mke2fs -d` from a tar (no loop devices, no root). GRUB, partitions and the ISO come later. A running VirtualBox VM holds VT-x on the owner's i7-3770, and KVM guests then die with `KVM: entry failed, hardware error 0x0`; `boot_test()` sees that and boots again without KVM (slower).
 
 ## Phases
 
-1. **LFS base without the form** (in progress): recipe format and `prepare`/`plan` (done); downloading and checking the sources, `fetch` (done); then the runner with checkpoints, chapters 7–8 in the imported image, chapters 9–10 from the recipe, a kernel for QEMU, a boot test in QEMU.
-2. **The agent**: Claude called on failure with the step, the book's text for it and the end of the log; proposes a fix, retries, records it.
-3. **Packages and caching.**
-4. **BLFS groups and the Qt form**, with dependency resolution from BLFS's XML (required/recommended/optional) and estimated build time from the book's SBUs.
-5. **ISO, installer, branding.**
+1. **A system that boots** (done 2026-11-17): recipe, `prepare` (stage3 + repository, checked), `build` (portage set-up, @world, packages, kernel, system configuration), `boot` (disk image, QEMU test). The example recipe builds in about 7 minutes with binary packages (the kernel step's dracut is most of it) and boots to `login:` in ~7 s under KVM. Next: root password and users, so the system can be logged into; static network and OpenRC tested.
+2. **The agent**: Claude called on failure with the step, the failing command and the end of the log; proposes a fix, retries, records it with the recipe.
+3. **Distribution**: own binary package server (the binpkgs), users, root password, ISO with installer, branding, GRUB/systemd-boot.
+4. **The Qt form**: writes the recipe; shows what a choice pulls in (Portage's dependency resolution) and how long it builds.
 
 ## Layout
 
-- `lfsbuilder/book.py`: reads the resolved book into `Step`s (`number`, `title`, `package`, `version`, `url`, `commands` with `kind` = the book's `remap`: pre, configure, make, test, install, adjust, clean). `write_conditions()` writes `conditional.ent`/`version.ent` (what the book's Makefile does: which edition is included); `resolve_command()` is the xmllint call, run in the host image.
-- `book.downloads()` reads chapter 3 the way the book's `wget-list.xsl`/`md5sum.xsl` do, for one edition (systemd 94 files, sysv 98).
-- `lfsbuilder/sources.py`: `fetch` into `work/sources/` (shared by all builds); a file is kept only if its MD5 matches; the upstream URL first, then the LFS mirror (`ftp.osuosl.org/pub/lfs/lfs-packages/<version>/`). The SysVinit bootscripts archive is packed from the book's `bootscripts/` reproducibly (fixed owner, time, order), as the book's `make-aux-files.sh` does.
-- `lfsbuilder/recipe.py`: loads and checks a recipe (TOML, `tomllib`).
-- `lfsbuilder/__main__.py`: `python3 -m lfsbuilder prepare|plan|fetch RECIPE`. Work files go to `work/` (ignored by git): `work/book-<version>-<init>/source` (the book's git checkout) and `resolved.xml`.
+- `lfsbuilder/recipe.py`: loads and checks a recipe (TOML, `tomllib`). Everything that ends up in a shell script or `make.conf` is checked against a pattern first.
+- `lfsbuilder/gentoo.py`: `keyring()`, `stage3()` (download, verify `.asc`), `repository()` (git fetch of one commit, `verify-commit`, `git archive` to a plain tree), `stage3_image()` (`docker import` of the stage3). gpg and git run in the tools image (`docker/host.Dockerfile`, `lfsbuilder-host:dev`).
+- `lfsbuilder/steps.py`: the steps as shell scripts written from the recipe: `portage` (make.conf, package.use, binrepos.conf, dracut config, profile), `world`, one per package, `kernel` (`gentoo-kernel-bin` with `installkernel[dracut]`), `system` (time zone, locale, keymap, network, services). /etc/hostname, hosts, resolv.conf are Docker's in a container: they are written at export.
+- `lfsbuilder/runner.py`: runs steps (`bash -l`, `set -x` with `PS4='### lfsbuilder: '` so the log shows the failing command), commits each as `lfsbuilder-build:<fingerprint>`, skips steps whose image exists, flattens images over 100 layers. Mounts: the repository read-only at /var/db/repos/gentoo, volumes `lfsbuilder-distfiles` and `lfsbuilder-binpkgs-<cpu>-<hash of flags>`. `MAKEOPTS` from `jobs` is passed in the environment (not fingerprinted).
+- `lfsbuilder/image.py`: `export()` (docker export → `rootfs.tar`, Docker's files replaced from the recipe, fstab added, kernel/initramfs copied out), `disk()` (`mke2fs -d rootfs.tar`), `boot_test()` (QEMU, waits for `login:` on the serial console).
+- `lfsbuilder/__main__.py`: `python3 -m lfsbuilder prepare|plan|build|boot RECIPE` (`build --until <step name>`). Work files in `work/` (ignored by git): `gentoo/{keys,stage3,repos}`, `build-<recipe>/{logs,boot,rootfs.tar,disk.img}`.
 - `recipes/example.toml`: the example recipe.
-
-On LFS 13.1 systemd the reader finds 143 sections from chapter 5 on and 583 commands.
 
 ## How to work here
 
 - **Ask the owner before every commit.** Never add Claude attribution or co-author lines to commits or PRs. Commits use the owner's GitHub noreply address (already the git config); the owner's real email address is private.
 - Installing packages on the host (`sudo apt install …`) is the owner's to run; suggest the command.
-- A full build compiles for hours and needs ~30 GB: say so before starting one, and run it in the background.
+- Builds can take long (hours without binary packages, a desktop more): say so before starting one, and run it in the background.
 - The owner prefers plain-text questions and direct action.
