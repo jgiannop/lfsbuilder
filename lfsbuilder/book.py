@@ -19,6 +19,24 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 FIRST_BUILD_CHAPTER = 5  # chapters before it prepare the host; the build starts here
+SOURCES_CHAPTER = 3  # "Packages and Patches": what the book's wget-list and md5sums are made from
+BOOTSCRIPTS_MD5 = "BOOTSCRIPTS-MD5SUM"  # the book makes this archive from its own tree
+
+
+@dataclasses.dataclass
+class Download:
+    url: str
+    md5: str
+
+    @property
+    def name(self) -> str:
+        return self.url.rsplit("/", 1)[-1]
+
+    @property
+    def from_book(self) -> bool:
+        """The LFS bootscripts (SysVinit only): the book packs them from its
+        own bootscripts/ directory, so their checksum is only known then."""
+        return self.md5 == BOOTSCRIPTS_MD5
 
 
 @dataclasses.dataclass
@@ -130,3 +148,32 @@ def read(resolved: Path, init: str) -> list[Step]:
             _commands(sect, init, step.commands)
             steps.append(step)
     return steps
+
+
+def downloads(resolved: Path, init: str) -> list[Download]:
+    """The book's wget-list and md5sums for one edition, as its Makefile
+    makes them (stylesheets/wget-list.xsl, md5sum.xsl): every list item of
+    chapter 3 with a "Download" link, and the MD5 sum beside it."""
+    root = ET.parse(resolved).getroot()
+    chapter = list(root.iter("chapter"))[SOURCES_CHAPTER - 1]
+    out: list[Download] = []
+
+    def walk(element: ET.Element) -> None:
+        for child in element:
+            if child.get("revision") not in (None, init) or child.get("condition") == "pdf":
+                continue
+            if child.tag == "listitem":
+                url = md5 = ""
+                for para in child.findall("para"):
+                    link = para.find("ulink")
+                    if link is not None and "Download" in (para.text or ""):
+                        url = link.get("url", "").split("?download")[0]
+                    if para.find("literal") is not None:
+                        md5 = (para.findtext("literal") or "").strip()
+                if url:
+                    out.append(Download(url, md5))
+            else:
+                walk(child)
+
+    walk(chapter)
+    return out

@@ -2,6 +2,7 @@
 
     python3 -m lfsbuilder prepare RECIPE   fetch the book the recipe names and read it
     python3 -m lfsbuilder plan RECIPE      the steps the build would run, and what is still undecided
+    python3 -m lfsbuilder fetch RECIPE     download the sources the book lists and check their MD5 sums
 """
 
 from __future__ import annotations
@@ -12,10 +13,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import book, recipe as recipes
+from . import book, recipe as recipes, sources
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
+SOURCES = WORK / "sources"  # shared by every build; a file is here only if its checksum matched
 HOST_IMAGE = "lfsbuilder-host:dev"
 
 
@@ -71,10 +73,23 @@ def plan(r: recipes.Recipe) -> int:
     return 0
 
 
+def fetch(r: recipes.Recipe) -> int:
+    if not resolved_path(r).exists():
+        print(f"the book isn't read yet: python3 -m lfsbuilder prepare {r.path}", file=sys.stderr)
+        return 1
+    wanted = book.downloads(resolved_path(r), r.init)
+    failed = sources.fetch(wanted, SOURCES, r.book, book_dir(r) / "source")
+    if failed:
+        print(f"\n{len(failed)} of {len(wanted)} sources couldn't be had: {', '.join(failed)}", file=sys.stderr)
+        return 1
+    print(f"\nall {len(wanted)} sources are in {SOURCES.relative_to(ROOT)}, their MD5 sums as the book gives them")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lfsbuilder")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "plan"):
+    for name in ("prepare", "plan", "fetch"):
         sub.add_parser(name).add_argument("recipe", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -85,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare":
         prepare(r)
         return 0
+    if args.command == "fetch":
+        return fetch(r)
     return plan(r)
 
 

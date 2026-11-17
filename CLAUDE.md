@@ -19,7 +19,7 @@ lfsbuilder builds a **reproducible, customizable Linux From Scratch system as th
 
 ## Phases
 
-1. **LFS base without the form** (in progress): recipe format and `prepare`/`plan` (done); then download and checksum the sources (`wget-list`, `md5sums` of the book), the runner with checkpoints, chapters 7–8 in the imported image, chapters 9–10 from the recipe, a kernel for QEMU, a boot test in QEMU.
+1. **LFS base without the form** (in progress): recipe format and `prepare`/`plan` (done); downloading and checking the sources, `fetch` (done); then the runner with checkpoints, chapters 7–8 in the imported image, chapters 9–10 from the recipe, a kernel for QEMU, a boot test in QEMU.
 2. **The agent**: Claude called on failure with the step, the book's text for it and the end of the log; proposes a fix, retries, records it.
 3. **Packages and caching.**
 4. **BLFS groups and the Qt form**, with dependency resolution from BLFS's XML (required/recommended/optional) and estimated build time from the book's SBUs.
@@ -28,8 +28,10 @@ lfsbuilder builds a **reproducible, customizable Linux From Scratch system as th
 ## Layout
 
 - `lfsbuilder/book.py`: reads the resolved book into `Step`s (`number`, `title`, `package`, `version`, `url`, `commands` with `kind` = the book's `remap`: pre, configure, make, test, install, adjust, clean). `write_conditions()` writes `conditional.ent`/`version.ent` (what the book's Makefile does: which edition is included); `resolve_command()` is the xmllint call, run in the host image.
+- `book.downloads()` reads chapter 3 the way the book's `wget-list.xsl`/`md5sum.xsl` do, for one edition (systemd 94 files, sysv 98).
+- `lfsbuilder/sources.py`: `fetch` into `work/sources/` (shared by all builds); a file is kept only if its MD5 matches; the upstream URL first, then the LFS mirror (`ftp.osuosl.org/pub/lfs/lfs-packages/<version>/`). The SysVinit bootscripts archive is packed from the book's `bootscripts/` reproducibly (fixed owner, time, order), as the book's `make-aux-files.sh` does.
 - `lfsbuilder/recipe.py`: loads and checks a recipe (TOML, `tomllib`).
-- `lfsbuilder/__main__.py`: `python3 -m lfsbuilder prepare|plan RECIPE`. Work files go to `work/` (ignored by git): `work/book-<version>-<init>/source` (the book's git checkout) and `resolved.xml`.
+- `lfsbuilder/__main__.py`: `python3 -m lfsbuilder prepare|plan|fetch RECIPE`. Work files go to `work/` (ignored by git): `work/book-<version>-<init>/source` (the book's git checkout) and `resolved.xml`.
 - `recipes/example.toml`: the example recipe.
 
 On LFS 13.1 systemd the reader finds 143 sections from chapter 5 on and 583 commands.
