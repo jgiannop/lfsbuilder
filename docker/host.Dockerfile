@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # LFS wants /bin/sh to be bash, and yacc/awk to be bison/gawk.
     && ln -sf bash /bin/sh
 
-# The book asks for a user "lfs" for chapters 5 and 6 (so nothing of the
-# host's leaks into the new tools); the runner makes it with the build's own
-# user id, so files on the shared folder are the developer's.
+# The user "lfs" of chapters 5 and 6 is made by the book's own chapter 4,
+# run by lfsbuilder's runner in a container of this image.
 WORKDIR /work

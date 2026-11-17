@@ -111,7 +111,7 @@ def _commands(element: ET.Element, init: str, out: list[Command]) -> None:
         if child.tag == "screen":
             if child.get("role") == "nodump":
                 continue
-            for user in child.iter("userinput"):
+            for user in child.findall("userinput"):  # a nested userinput (a user name) is part of its command
                 text, needs = _text(user)
                 if text.strip():
                     out.append(Command(user.get("remap", ""), text.strip("\n"), needs))
@@ -119,8 +119,8 @@ def _commands(element: ET.Element, init: str, out: list[Command]) -> None:
             _commands(child, init, out)
 
 
-def read(resolved: Path, init: str) -> list[Step]:
-    """The book's build steps (chapter 5 on), in order, for one edition."""
+def read(resolved: Path, init: str, first_chapter: int = FIRST_BUILD_CHAPTER) -> list[Step]:
+    """The book's build steps (chapter 5 on, unless asked), in order, for one edition."""
     root = ET.parse(resolved).getroot()
     steps: list[Step] = []
     for position, chapter in enumerate(root.iter("chapter"), start=1):
@@ -131,7 +131,7 @@ def read(resolved: Path, init: str) -> list[Step]:
             if sect.tag != "sect1" or sect.get("revision") not in (None, init):
                 continue
             index += 1
-            if position < FIRST_BUILD_CHAPTER:
+            if position < first_chapter:
                 continue
             title = sect.find("title")
             step = Step(

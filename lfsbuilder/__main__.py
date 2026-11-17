@@ -3,6 +3,7 @@
     python3 -m lfsbuilder prepare RECIPE   fetch the book the recipe names and read it
     python3 -m lfsbuilder plan RECIPE      the steps the build would run, and what is still undecided
     python3 -m lfsbuilder fetch RECIPE     download the sources the book lists and check their MD5 sums
+    python3 -m lfsbuilder build RECIPE     run the book's steps in Docker, a checkpoint after each (chapters 4-8 for now)
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import book, recipe as recipes, sources
+from . import book, recipe as recipes, runner, sources
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
@@ -86,11 +87,37 @@ def fetch(r: recipes.Recipe) -> int:
     return 0
 
 
+LAST_CHAPTER = 8  # chapters 9-10 (configuration, kernel) are next
+
+
+def build(r: recipes.Recipe, until: str | None) -> int:
+    if not resolved_path(r).exists():
+        print(f"the book isn't read yet: python3 -m lfsbuilder prepare {r.path}", file=sys.stderr)
+        return 1
+    downloads = book.downloads(resolved_path(r), r.init)
+    missing = [d.name for d in downloads if not (SOURCES / d.name).exists()]
+    if missing:
+        print(f"{len(missing)} sources aren't fetched yet: python3 -m lfsbuilder fetch {r.path}", file=sys.stderr)
+        return 1
+    steps = [s for s in book.read(resolved_path(r), r.init, first_chapter=4) if s.chapter <= LAST_CHAPTER]
+    setup, planned = runner.plan(steps, downloads, HOST_IMAGE, f"LFS {r.book} {r.init}", r.run_tests, r.jobs, r.hostname)
+    if until:
+        numbers = [p.step.number for p in planned]
+        if until not in numbers:
+            print(f"there's no step {until} to stop at (chapters 4-{LAST_CHAPTER}: {', '.join(numbers)})", file=sys.stderr)
+            return 2
+        planned = planned[: numbers.index(until) + 1]
+    return runner.run(setup, planned, HOST_IMAGE, SOURCES, WORK / f"build-{r.path.stem}" / "logs", r.hostname, r.jobs)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lfsbuilder")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "plan", "fetch"):
-        sub.add_parser(name).add_argument("recipe", type=Path)
+    for name in ("prepare", "plan", "fetch", "build"):
+        command = sub.add_parser(name)
+        command.add_argument("recipe", type=Path)
+        if name == "build":
+            command.add_argument("--until", metavar="STEP", help="stop after this step, as the book numbers it (5.2)")
     args = parser.parse_args(argv)
     try:
         r = recipes.load(args.recipe)
@@ -100,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare":
         prepare(r)
         return 0
+    if args.command == "build":
+        return build(r, args.until)
     if args.command == "fetch":
         return fetch(r)
     return plan(r)
