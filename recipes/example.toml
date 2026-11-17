@@ -1,0 +1,32 @@
+# A recipe: everything that makes this system this system. The build reads
+# only this file, the LFS book it names and the sources the book lists.
+# (Later, the form writes it; for now it is written by hand.)
+
+[distribution]
+name = "Example"
+version = "0.1"
+
+[base]
+book = "13.1"            # the LFS book's version (its git tag is r13.1)
+init = "systemd"         # or "sysv"
+jobs = 0                 # make's parallel jobs; 0 = as many as the processors
+run_tests = false        # the book's test suites (the "test" commands): slow, and some failures are expected
+
+[system]
+hostname = "lfs"
+domain = "localdomain"
+locale = "en_US.UTF-8"
+timezone = "Europe/Athens"
+keymap = "us"
+paper_size = "A4"        # groff's default paper
+
+[network]
+mode = "dhcp"            # or "static" with the keys below
+# address = "192.168.1.50/24"
+# gateway = "192.168.1.1"
+# dns = ["192.168.1.1"]
+
+[output]
+format = "qemu"          # a disk image to boot in QEMU (later: "iso", "rootfs", "docker")
+size_gb = 12
+filesystem = "ext4"
