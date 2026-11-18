@@ -75,7 +75,14 @@ def clones(tools, r: Recipe, overlay_tree: Path, gentoo_keys: Path, www: Path, i
 
     _clone(tools, www / binhost.OVERLAY, r.stem, argo_clone, f"{r.binhost}{binhost.OVERLAY}")
     published = tools.run("git", "-C", tools.inside(argo_clone), "rev-parse", "HEAD^{tree}", capture=True).stdout.strip()
-    if published != _tree_of(tools, overlay_tree):
+    # What publish adds to the recipe's tree: the date of publishing.
+    expected = into / "argo-expected"
+    shutil.rmtree(expected, ignore_errors=True)
+    shutil.copytree(overlay_tree, expected)
+    shutil.copy2(argo_clone / "metadata" / "timestamp.chk", expected / "metadata" / "timestamp.chk")
+    same = published == _tree_of(tools, expected)
+    shutil.rmtree(expected, ignore_errors=True)
+    if not same:
         raise CloneError(f"the published argo.git isn't the argo repository of the recipe as it is now: python3 -m lfsbuilder publish {r.path}")
     home = into / "argo-keyring"
     shutil.rmtree(home, ignore_errors=True)

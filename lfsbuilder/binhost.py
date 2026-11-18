@@ -33,6 +33,7 @@ import http.server
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from . import gentoo
@@ -40,6 +41,8 @@ from .recipe import Recipe
 
 REPOSITORY = "gentoo.git"  # in www/; a branch per recipe
 OVERLAY = "argo.git"  # the distribution's own repository (overlay.py); a branch per recipe
+MAX_AGE_DAYS = 30  # systems refuse an argo repository published longer ago (owner's choice, 2026-11-18)
+TIMESTAMP_FORMAT = "%a, %d %b %Y %H:%M:%S +0000"  # Portage's (portage.const), for metadata/timestamp.chk
 
 KEY_TYPE = ("ed25519", "sign", "never")  # gpg --quick-gen-key: algorithm, usage, expiry
 
@@ -191,22 +194,23 @@ def publish_repository(tools, r: Recipe, keyring: Path, www: Path) -> None:
 def publish_overlay(tools, r: Recipe, tree: Path, home: Path, www: Path) -> str:
     """Commits the recipe's argo repository (`tree`, written by overlay.write)
     to www/argo.git as the branch <recipe name>, signed with the package
-    signing key (systems check it: steps.updates). A new commit only when
-    the tree changed. Returns the branch's commit."""
+    signing key (systems check it: steps.updates), with the date of
+    publishing in metadata/timestamp.chk. Returns the new commit."""
     git = www / OVERLAY
     if not (git / "HEAD").exists():
         www.mkdir(parents=True, exist_ok=True)
         tools.run("git", "init", "--quiet", "--bare", tools.inside(git))
     fpr = fingerprint(tools, r.path.parent / r.binhost_key)
+    # The date of publishing, which systems refuse when older than MAX_AGE_DAYS (Portage's
+    # sync-git-verify-max-age-days): so each publish is a new commit, and publishing at least that
+    # often (even with no change) is what keeps an old release from being passed off as the latest.
+    (tree / "metadata" / "timestamp.chk").write_text(time.strftime(TIMESTAMP_FORMAT, time.gmtime()) + "\n")
     script = f"""set -euo pipefail
 export GIT_DIR="$1" GIT_WORK_TREE="$2" GIT_INDEX_FILE=/tmp/index GNUPGHOME="$3"
 git read-tree --empty
 git add -A
 tree=$(git write-tree)
 parent=$(git rev-parse -q --verify "refs/heads/{r.stem}" || true)
-if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{{tree}}")" = "$tree" ]; then
-    echo "$parent"; exit 0
-fi
 commit=$(git -c user.name="{r.name}" -c user.email=packages@argo-linux.invalid commit-tree -S{fpr} "$tree" \
     ${{parent:+-p "$parent"}} -m "{r.name} {r.version} ({r.stem})")
 git update-ref "refs/heads/{r.stem}" "$commit"

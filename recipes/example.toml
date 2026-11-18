@@ -55,7 +55,7 @@ password = "$6$woOKfvYyg2qIitmP$uwQTom.5BvfCc80CZEQjS6ju6fOVms4TIY7fDqwNuLmUaCL8
 [updates]
 # The distribution's own binary package server (python3 -m lfsbuilder publish,
 # then serve): the system takes packages from it only signed with this key.
-server = "http://10.0.2.2:8080/"  # QEMU's address of the machine running `serve`
+server = "http://192.168.1.93:8080/"  # this PC on the home network (QEMU guests reach it too); `serve --bind 0.0.0.0`
 key = "keys/binhost.asc"          # from python3 -m lfsbuilder signing-key
 
 [output]

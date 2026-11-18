@@ -115,6 +115,9 @@ def _profile(r: Recipe) -> dict[str, bytes]:
         "profiles/profiles.desc": f"amd64 argo/{r.stem} stable\n".encode(),
         "metadata/layout.conf": ("masters = gentoo\nthin-manifests = true\nsign-manifests = false\n"
                                  "profile-formats = portage-2\ncache-formats =\n").encode(),
+        # The Gentoo tree this release goes with: the systems check theirs against it after every
+        # sync (steps.GENTOO_PIN_HOOK). (metadata/timestamp.chk is added by publish: not in the build.)
+        "metadata/gentoo-commit": f"{r.repository}\n".encode(),
         f"{base}/parent": f"gentoo:{r.profile}\n".encode(),
         f"{base}/make.defaults": f'# Written by lfsbuilder from the recipe.\nUSE="{" ".join(r.use)}"\n'.encode(),
         f"{base}/package.use": _package_use(r).encode(),
@@ -343,7 +346,9 @@ def _digest(items: dict[str, bytes]) -> str:
 
 def profile_digest(r: Recipe) -> str:
     """Of what the profile holds: in the portage step's script, so a change rebuilds from there."""
-    return _digest({p: c for p, c in files(r).items() if p.startswith(("profiles/", "metadata/"))})
+    # (metadata/gentoo-commit is the recipe's repository pin, which every fingerprint starts from already.)
+    return _digest({p: c for p, c in files(r).items()
+                    if p.startswith(("profiles/", "metadata/")) and p != "metadata/gentoo-commit"})
 
 
 def packages_digest(r: Recipe) -> str:

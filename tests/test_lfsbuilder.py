@@ -165,13 +165,13 @@ class Steps(unittest.TestCase):
         self.assertEqual(with_updates[-1].step.name, "updates")
         self.assertEqual([p.fingerprint for p in with_updates[:-1]], [p.fingerprint for p in without])
         script = with_updates[-1].step.script
-        self.assertIn(f"sync-uri = http://10.0.2.2:8080/{r.binary_set}/", script)
+        self.assertIn(f"sync-uri = {r.binhost}{r.binary_set}/", script)
         self.assertIn("verify-signature = true", script)
         self.assertIn(steps.TRUST.read_text().rstrip(), script)
         self.assertIn(r.binhost_key_text().rstrip(), script)
         self.assertNotIn("LFSBUILDER_EOF", steps.TRUST.read_text())
         # The repository: the recipe's branch from the same server, its head signed by Gentoo.
-        self.assertIn("sync-uri = http://10.0.2.2:8080/gentoo.git", script)
+        self.assertIn(f"sync-uri = {r.binhost}gentoo.git", script)
         self.assertIn("--branch example --single-branch", script)
         self.assertIn("sync-git-verify-commit-signature = yes", script)
 
@@ -272,10 +272,21 @@ class Overlay(unittest.TestCase):
             overlay.files(dataclasses.replace(r, path=r.path.with_name("my-desktop.toml")))
 
     def test_systems_sync_it_from_the_server_signed(self):
-        script = steps.updates(recipe.load(RECIPES / "example.toml")).script
-        self.assertIn("sync-uri = http://10.0.2.2:8080/argo.git", script)
+        r = recipe.load(RECIPES / "example.toml")
+        script = steps.updates(r).script
+        self.assertIn(f"sync-uri = {r.binhost}argo.git", script)
         self.assertIn(f"sync-openpgp-key-path = {steps.BINHOST_KEY}", script)
         self.assertIn("sync-openpgp-key-refresh = no", script)  # ours is on no keyserver
+
+    def test_an_old_release_is_refused(self):
+        from lfsbuilder import binhost
+        r = recipe.load(RECIPES / "example.toml")
+        script = steps.updates(r).script
+        self.assertIn(f"sync-git-verify-max-age-days = {binhost.MAX_AGE_DAYS}", script)
+        self.assertIn("/etc/portage/postsync.d/argo-gentoo-pin", script)
+        self.assertIn("*/*", steps.GENTOO_PIN_HOOK)  # the wrong Gentoo tree masks everything
+        self.assertEqual(overlay.files(r)["metadata/gentoo-commit"], f"{r.repository}\n".encode())
+        self.assertNotIn("metadata/timestamp.chk", overlay.files(r))  # publish's, so not in the fingerprints
 
     def test_the_installer_puts_our_picture_behind_grub(self):
         text = steps.INSTALLER.read_text()

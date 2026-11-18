@@ -33,7 +33,7 @@ import dataclasses
 import shlex
 from pathlib import Path
 
-from . import fixes as fixes_, overlay
+from . import binhost, fixes as fixes_, overlay
 from .recipe import Recipe
 
 EMERGE_OPTS = "--usepkg --binpkg-respect-use=y --with-bdeps=y"  # the build adds --jobs (runner.Shared)
@@ -251,7 +251,9 @@ def updates(r: Recipe) -> Step:
     script += "emerge --noreplace --verbose dev-vcs/git\n"
     script += _file("/etc/portage/repos.conf/gentoo.conf", REPOS_CONF.format(server=r.binhost, branch=r.stem))
     script += _file("/etc/portage/repos.conf/argo.conf", ARGO_REPOS_CONF.format(
-        repo=overlay.REPO, location=overlay.LOCATION, server=r.binhost, branch=r.stem, key=BINHOST_KEY))
+        repo=overlay.REPO, location=overlay.LOCATION, server=r.binhost, branch=r.stem, key=BINHOST_KEY,
+        max_age=binhost.MAX_AGE_DAYS))
+    script += _file("/etc/portage/postsync.d/argo-gentoo-pin", GENTOO_PIN_HOOK) + "chmod 0755 /etc/portage/postsync.d/argo-gentoo-pin\n"
     return Step("updates", f"Updates from {r.binhost}", script)
 
 
@@ -265,7 +267,28 @@ sync-git-verify-commit-signature = yes
 sync-openpgp-key-path = {key}
 # The key file is the trust anchor: ours is on no keyserver, and refreshing it from one fails the check.
 sync-openpgp-key-refresh = no
+# Refused when published longer ago: an old release can't be passed off as the latest.
+sync-git-verify-max-age-days = {max_age}
 auto-sync = yes
+"""
+
+
+GENTOO_PIN_HOOK = """#!/bin/sh
+# Written by lfsbuilder: after every sync, Gentoo's tree must be the commit this release of the
+# distribution goes with (/var/db/repos/argo/metadata/gentoo-commit; argo is signed and dated, so
+# this keeps an old Gentoo tree from being sent with a current release). If it isn't, every
+# package is masked until it is: an update on the wrong tree could do more harm than none.
+mask=/etc/portage/package.mask/argo-gentoo-pin
+pin=$(cat /var/db/repos/argo/metadata/gentoo-commit 2>/dev/null) || exit 0
+head=$(git -C /var/db/repos/gentoo rev-parse HEAD 2>/dev/null || echo none)
+if [ "$head" = "$pin" ]; then
+    rm -f "$mask"
+    exit 0
+fi
+mkdir -p /etc/portage/package.mask
+printf '# Written by /etc/portage/postsync.d/argo-gentoo-pin: Gentoo tree %s, the release pins %s.\\n*/*\\n' "$head" "$pin" > "$mask"
+echo "!!! Gentoo's tree is at $head, but this release pins $pin: every package is masked until a sync brings the right one."
+exit 1
 """
 
 
