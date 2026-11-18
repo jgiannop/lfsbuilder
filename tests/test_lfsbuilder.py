@@ -15,7 +15,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from lfsbuilder import check, estimate, fixes, image, overlay, recipe, repair, runner, steps
+from lfsbuilder import calamares, check, estimate, fixes, image, overlay, recipe, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES = ROOT / "recipes"
@@ -239,6 +239,56 @@ class Screens(unittest.TestCase):
         self.assertEqual(image.black_share(png((34, 34, 38))), 0.0)                 # GDM's grey
 
 
+class GraphicalInstaller(unittest.TestCase):
+    def test_desktops_have_it_and_only_their_installer_step_changes(self):
+        for name in ("gnome", "plasma", "xfce"):
+            r = recipe.load(RECIPES / f"{name}.toml")
+            self.assertTrue(r.graphical_installer, name)
+            with_it = runner.plan(steps.all_steps(r), "seed")
+            without = runner.plan(steps.all_steps(dataclasses.replace(r, graphical_installer=False)), "seed")
+            changed = [a.step.name for a, b in zip(with_it, without) if a.fingerprint != b.fingerprint]
+            self.assertEqual(changed, ["installer", "updates"], name)  # (updates comes after it)
+            script = next(s for s in steps.all_steps(r) if s.name == "installer").script
+            self.assertLess(script.index("sys-boot/grub mount"), script.index("emerge --noreplace --verbose sys-boot/grub"))
+            self.assertIn("emerge --noreplace --oneshot --verbose app-admin/calamares", script)
+            self.assertIn(f"- {calamares.display_manager(r)}\n", calamares.modules(r)["displaymanager.conf"])
+        self.assertFalse(recipe.load(RECIPES / "example.toml").graphical_installer)
+
+    def test_only_what_was_tested_is_offered(self):
+        r = recipe.load(RECIPES / "xfce.toml")
+        partition = calamares.modules(r)["partition.conf"]
+        self.assertIn("enableLuksAutomatedPartitioning: false", partition)
+        self.assertIn('availableFileSystemTypes: [ "ext4" ]', partition)
+        script = next(s for s in steps.all_steps(r) if s.name == "installer").script
+        self.assertIn(f"rm -f {calamares.OWN_LAUNCHER}\n", script)  # one menu entry: ours
+
+    def test_needs_a_desktop(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write(Path(d), example_text() + "\n[installer]\ngraphical = true\n")
+            with self.assertRaises(recipe.RecipeError) as error:
+                recipe.load(path)
+            self.assertIn("installer.graphical needs", str(error.exception))
+
+    def test_files(self):
+        r = recipe.load(RECIPES / "gnome.toml")
+        files = calamares.files(r)
+        self.assertIn(f"region: \"{r.timezone.split('/')[0]}\"", files["/etc/calamares/modules/locale.conf"])
+        self.assertIn(f'source: "{calamares.LIVE_ROOT}"\n      sourcefs: "file"', files["/etc/calamares/modules/unpackfs.conf"])
+        # The live installer's rule must be read after Gentoo's `wheel` rule (the last match wins).
+        self.assertGreater(Path(calamares.SUDO_RULE).name, "wheel")
+        # The live accounts go before the new user is made; the boot menu's set-up before GRUB.
+        exec_ = calamares.settings().split("- exec:")[1].split("- show:")[0].split()
+        self.assertLess(exec_.index("shellprocess@live"), exec_.index("users"))
+        self.assertLess(exec_.index("shellprocess@argo"), exec_.index("bootloader"))
+        self.assertIn("argo-calamares live demo", files["/etc/calamares/modules/shellprocess-live.conf"])
+        self.assertIn(f'productName: "{r.name}"', files["/etc/calamares/branding/argo/branding.desc"])
+        helper = files["/usr/libexec/argo-calamares"]
+        for live_only in calamares.LIVE_ONLY:
+            self.assertIn(live_only, helper)
+            if "autoinstall" not in live_only:  # the text installer drops them too
+                self.assertIn(live_only.lstrip("/"), (ROOT / "lfsbuilder" / "installer.sh").read_text())
+
+
 class Logs(unittest.TestCase):
     def test_portage_asking_for_a_use_change_is_read(self):
         m = check._CHANGE.match("- net-libs/ngtcp2-1.25.0::gentoo (Change USE: +gnutls -doc)")
@@ -316,6 +366,20 @@ class Overlay(unittest.TestCase):
             self.assertIn(f"use {flag}", ebuild)
         self.assertIn("LookAndFeelPackage=org.argolinux.desktop", ebuild)
         self.assertIn("/etc/portage/env/xfce-base", ebuild)
+
+    def test_lightdm_starts_xfce(self):
+        # Without it LightDM starts xinit's Xsession (first by name) and the login falls back to the greeter.
+        files = overlay.files(recipe.load(RECIPES / "xfce.toml"))
+        self.assertEqual(files["argo-base/argo-release/files/lightdm-50-argo.conf"], b"[Seat:*]\nuser-session=xfce\n")
+        self.assertIn("/etc/lightdm/lightdm.conf.d", self.release("xfce"))
+
+    def test_the_xfce_wallpaper_hook_is_given_its_root(self):
+        # In pkg_postinst ED is read-only (the package's image): setting it did nothing, and the
+        # wallpaper went into the image, not the system.
+        ebuild = self.release("xfce")
+        self.assertNotIn("ED=", ebuild)
+        self.assertIn('argo_wallpaper "${EROOT}/"', ebuild)
+        self.assertIn('post_src_install() { argo_wallpaper "${ED}"; }', overlay.XFDESKTOP_HOOK)
 
     def test_the_meta_package_is_named_after_the_recipe(self):
         r = recipe.load(RECIPES / "plasma.toml")

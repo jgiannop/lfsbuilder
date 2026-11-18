@@ -112,8 +112,9 @@ if [ -f "$target/usr/share/argo/argo-grub-1024x768.png" ]; then
     sed -i 's|^GRUB_THEME=|#GRUB_THEME=|' "$target/etc/default/grub"
 fi
 chroot "$target" grub-mkconfig -o /boot/grub/grub.cfg
-# The automatic install belongs to the live system only.
-rm -f "$target/etc/systemd/system/multi-user.target.wants/lfsbuilder-autoinstall.service"
+# The automatic install, and the graphical installer's launcher and sudo rule, belong to the live system only.
+rm -f "$target/etc/systemd/system/multi-user.target.wants/lfsbuilder-autoinstall.service" \
+    "$target/usr/share/applications/argo-install.desktop" "$target/etc/sudoers.d/zz-argo-live-installer" "$target/usr/bin/argo-install"
 
 say "Finishing"
 sync

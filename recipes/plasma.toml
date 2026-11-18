@@ -61,6 +61,9 @@ password = "$6$woOKfvYyg2qIitmP$uwQTom.5BvfCc80CZEQjS6ju6fOVms4TIY7fDqwNuLmUaCL8
 server = "http://192.168.1.93:8080/"  # this PC on the home network (QEMU guests reach it too)
 key = "keys/binhost.asc"
 
+[installer]
+graphical = true                 # Calamares on the live desktop: "Install Argo Linux"
+
 [output]
 format = "qemu"                  # a disk image to boot in QEMU (later: "iso", "rootfs", "docker")
 size_gb = 30

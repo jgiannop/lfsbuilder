@@ -27,6 +27,7 @@ render() {
 for size in 64 128 256 512; do
     render argo.svg "$size" "$size" "argo-$size.png"
 done
+render argo-light.svg 256 256 argo-light-256.png
 render argo-wordmark.svg 440 128 argo-wordmark-440.png
 render argo-wordmark-light.svg 440 128 argo-wordmark-light-440.png
 render argo-wordmark-light.svg 880 256 argo-wordmark-light-880.png

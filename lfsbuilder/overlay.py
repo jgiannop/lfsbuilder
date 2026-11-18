@@ -71,6 +71,9 @@ def meta_name(r: Recipe) -> str:
     return f"{CATEGORY}/argo-{r.stem}"
 
 
+# LightDM's session when the desktop is Xfce: without it, LightDM starts the first session by name,
+# xinit's Xsession, and the login returns to the greeter ("exec: xsm: not found").
+LIGHTDM_SESSION = "[Seat:*]\nuser-session=xfce\n"
 DESKTOP_FLAGS = ("gdm", "sddm", "lightdm", "plasma", "xfce")
 
 
@@ -165,7 +168,9 @@ Theme=org.kde.breeze.desktop
 XFDESKTOP_HOOK = """# Written by lfsbuilder (argo-base/argo-release): Argo Linux's wallpaper as
 # xfdesktop's default, the file built into it, at every install of xfdesktop.
 argo_wallpaper() {
-    local dir="${ED%/}/usr/share/backgrounds/xfce"
+    # $1: the root to write into (ED while installing xfdesktop, EROOT after: in pkg_postinst ED is
+    # read-only and names the package's own image, so it can't be set).
+    local dir="${1%/}/usr/share/backgrounds/xfce"
     mkdir -p "$dir"
     rm -f "$dir/xfce-x.svg"
     # The picture inside the SVG (a data: URI): GdkPixbuf, which xfdesktop loads it with, doesn't
@@ -176,7 +181,7 @@ argo_wallpaper() {
         printf '%s\\n' '"/></svg>'
     } > "$dir/xfce-x.svg"
 }
-post_src_install() { argo_wallpaper; }
+post_src_install() { argo_wallpaper "${ED}"; }
 """
 
 
@@ -204,6 +209,7 @@ def _release(r: Recipe) -> dict[str, bytes]:
     files[f"{d}/files/lnf-metadata.json"] = (json.dumps(PLASMA_LNF_METADATA, indent=4) + "\n").encode()
     files[f"{d}/files/lnf-defaults"] = PLASMA_LNF_DEFAULTS.encode()
     files[f"{d}/files/xfdesktop.env"] = XFDESKTOP_HOOK.encode()
+    files[f"{d}/files/lightdm-50-argo.conf"] = LIGHTDM_SESSION.encode()
     lnf = f"/usr/share/plasma/look-and-feel/{PLASMA_LNF}"
     pictures = "\n".join(f'\tdoins "${{FILESDIR}}"/{name}' for name in PICTURES)
     ebuild = f"""# Written by lfsbuilder: the release package of {r.name}.
@@ -264,6 +270,11 @@ src_install() {{
 \t\t# (a Portage hook, run as the package is installed) at every update of xfdesktop.
 \t\tinsinto /etc/portage/env/xfce-base
 \t\tnewins "${{FILESDIR}}"/xfdesktop.env xfdesktop
+\t\tif use lightdm; then
+\t\t\t# LightDM's default session is the first by name: Xsession (xinit's, which fails without xsm).
+\t\t\tinsinto /etc/lightdm/lightdm.conf.d
+\t\t\tnewins "${{FILESDIR}}"/lightdm-50-argo.conf 50-argo.conf
+\t\tfi
 \tfi
 }}
 
@@ -290,7 +301,7 @@ pkg_postinst() {{
 \t\tfi
 \tfi
 \tif use xfce; then
-\t\t( ED="${{EROOT}}/"; source "${{EROOT}}"/etc/portage/env/xfce-base/xfdesktop; argo_wallpaper )
+\t\t( source "${{EROOT}}"/etc/portage/env/xfce-base/xfdesktop; argo_wallpaper "${{EROOT}}/" )
 \tfi
 \txdg_icon_cache_update
 }}

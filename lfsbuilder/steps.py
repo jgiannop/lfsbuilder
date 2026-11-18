@@ -29,11 +29,12 @@ exported, from the recipe.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import shlex
 from pathlib import Path
 
-from . import binhost, fixes as fixes_, overlay
+from . import binhost, calamares, fixes as fixes_, overlay
 from .recipe import Recipe
 
 EMERGE_OPTS = "--usepkg --binpkg-respect-use=y --with-bdeps=y"  # the build adds --jobs (runner.Shared)
@@ -207,8 +208,22 @@ def installer(r: Recipe) -> Step:
     lfsbuilder.autoinstall=DISK (for automatic installs and the install test)."""
     script = "set -e\n"
     script += "grep -q '^GRUB_PLATFORMS=' /etc/portage/make.conf || echo 'GRUB_PLATFORMS=\"efi-64 pc\"' >> /etc/portage/make.conf\n"
+    if r.graphical_installer:  # (before GRUB is emerged: Calamares wants it with USE=mount)
+        script += _file("/etc/portage/package.use/zz-installer", "\n".join(calamares.PACKAGE_USE) + "\n")
     script += "emerge --noreplace --verbose sys-boot/grub sys-apps/gptfdisk sys-fs/dosfstools\n"
     script += _file("/usr/sbin/lfsbuilder-install", INSTALLER.read_text()) + "chmod 0755 /usr/sbin/lfsbuilder-install\n"
+    if r.graphical_installer:
+        # --oneshot: not in the world file, so `emerge --depclean` takes Calamares off installed systems.
+        script += f"emerge --noreplace --oneshot --verbose {' '.join(calamares.PACKAGES)}\n"
+        for path, text in sorted(calamares.files(r).items()):
+            script += _file(path, text)
+        script += f"chmod 0755 {' '.join(calamares.EXECUTABLE)}\n"
+        script += f"rm -f {calamares.OWN_LAUNCHER}\n"  # Calamares' own (pkexec): ours in its place
+        script += f"chmod 0440 {calamares.SUDO_RULE}\nvisudo -c -f {calamares.SUDO_RULE}\n"
+        script += (f"base64 -d > {calamares.CONFIG}/branding/argo/{calamares.LIGHT_LOGO.name} << 'LFSBUILDER_EOF'\n"
+                   f"{base64.b64encode(calamares.LIGHT_LOGO.read_bytes()).decode()}\nLFSBUILDER_EOF\n")
+        for picture in calamares.PICTURES:
+            script += f"ln -sf {overlay.ARGO}/{picture} {calamares.CONFIG}/branding/argo/{picture}\n"
     if r.init == "systemd":
         script += _file("/etc/systemd/system/lfsbuilder-autoinstall.service", AUTOINSTALL_UNIT)
         script += "systemctl enable lfsbuilder-autoinstall.service\n"

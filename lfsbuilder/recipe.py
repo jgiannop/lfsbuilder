@@ -57,6 +57,7 @@ class Recipe:
     services: list[str]
     binhost: str = ""      # [updates] server: the base URL of the distribution's binary package server
     binhost_key: str = ""  # [updates] key: its signing key (public), a file beside the recipe
+    graphical_installer: bool = False  # [installer] graphical: Calamares on the live desktop (calamares.py)
     fixes: list = dataclasses.field(default_factory=list)  # fixes.Fix, from <name>.fixes.toml beside the recipe
 
     @property
@@ -124,8 +125,9 @@ def load(path: Path) -> Recipe:
             raise RecipeError(f"[{name}] must be a table")
         return value
 
-    dist, base, use, packages, system, network, output, users, services, updates = (
-        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users", "services", "updates")
+    dist, base, use, packages, system, network, output, users, services, updates, installer = (
+        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users", "services",
+                             "updates", "installer")
     )
     problems: list[str] = []
 
@@ -164,6 +166,7 @@ def load(path: Path) -> Recipe:
         services=strings(services.get("enable", []), "services.enable"),
         binhost=str(updates.get("server", "")),
         binhost_key=str(updates.get("key", "")),
+        graphical_installer=bool(installer.get("graphical", False)),
     )
     recipe.network.setdefault("manager", "networkd" if recipe.init == "systemd" else "netifrc")
     raw_accounts = users.get("accounts", [])
@@ -232,6 +235,10 @@ def load(path: Path) -> Recipe:
     for service in recipe.services:
         if not _SERVICE.match(service):
             problems.append(f"services.enable: {service!r} isn't a service name")
+    if recipe.graphical_installer and (recipe.init != "systemd"
+                                       or not any(s in ("gdm", "sddm", "lightdm") for s in recipe.services)):
+        problems.append("installer.graphical needs systemd and a display manager (gdm, sddm or lightdm): "
+                        "Calamares runs on the live desktop")
     if recipe.output.get("format") not in ("qemu",):
         problems.append("output.format can only be \"qemu\" for now")
     if recipe.root_password and not _HASH.match(recipe.root_password):
@@ -336,6 +343,8 @@ def dump(r: Recipe) -> str:
                 f"groups = {_list(a.groups)}", f"password = {_s(a.password)}"]
     if r.binhost:
         out += ["", "[updates]", f"server = {_s(r.binhost)}", f"key = {_s(r.binhost_key)}"]
+    if r.graphical_installer:
+        out += ["", "[installer]", "graphical = true"]
     out += ["", "[output]"]
     out += [f"{key} = {value if isinstance(value, int) else _s(str(value))}" for key, value in r.output.items()]
     return "\n".join(out) + "\n"
