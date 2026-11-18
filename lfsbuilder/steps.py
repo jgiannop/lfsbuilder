@@ -13,8 +13,8 @@ disk and the boot loader):
   <package>   each package of the recipe, one step each, in its order
   services    the services to start at boot (the recipe's, NetworkManager)
   users       root's password, the accounts, sudo for "wheel"
-  branding    the distribution's logo (icons, /usr/share/argo) and its login
-              screen: GDM's logo, SDDM's Breeze theme, LightDM's background
+  argo        the distribution's own packages (overlay.py): argo-meta, the
+              recipe's packages; argo-release, os-release and the look
   installer   GRUB (BIOS and UEFI), the disk tools, and lfsbuilder-install,
               which puts the live system (iso) on a disk; last, so adding it
               changed no other step's checkpoint
@@ -29,12 +29,11 @@ exported, from the recipe.
 
 from __future__ import annotations
 
-import base64
 import dataclasses
 import shlex
 from pathlib import Path
 
-from . import fixes as fixes_
+from . import fixes as fixes_, overlay
 from .recipe import Recipe
 
 EMERGE_OPTS = "--usepkg --binpkg-respect-use=y --with-bdeps=y"  # the build adds --jobs (runner.Shared)
@@ -71,7 +70,6 @@ def make_conf(r: Recipe) -> str:
         'CXXFLAGS="${COMMON_FLAGS}"',
         'FCFLAGS="${COMMON_FLAGS}"',
         'FFLAGS="${COMMON_FLAGS}"',
-        f'USE="{" ".join(r.use)}"',
         f'FEATURES="{" ".join(features)}"',
         'ACCEPT_LICENSE="-* @FREE @BINARY-REDISTRIBUTABLE"',
         f'EMERGE_DEFAULT_OPTS="{EMERGE_OPTS}"',
@@ -80,19 +78,13 @@ def make_conf(r: Recipe) -> str:
     return "\n".join(lines) + "\n"
 
 
-def package_use(r: Recipe) -> str:
-    lines = ["# Written by lfsbuilder from the recipe.",
-             # The kernel's initramfs is made by dracut through installkernel (Handbook: "Installing a distribution kernel").
-             "sys-kernel/installkernel dracut"]
-    # Sorted: the order they were written in (by hand or by the form) mustn't change the build.
-    lines += [f"{atom} {' '.join(flags)}" for atom, flags in sorted(r.package_use.items())]
-    return "\n".join(lines) + "\n"
-
-
 def portage(r: Recipe) -> Step:
     script = "set -e\n"
     script += _file("/etc/portage/make.conf", make_conf(r))
-    script += "rm -rf /etc/portage/package.use\n" + _file("/etc/portage/package.use/lfsbuilder", package_use(r))
+    # USE flags (the recipe's, and per package) are the argo profile's (overlay.py), whose digest
+    # is here: a change to it rebuilds from this step.
+    script += f"# the argo profile: {overlay.profile_digest(r)}\n"
+    script += "rm -rf /etc/portage/package.use\n"
     if r.binary_packages:
         script += _file("/etc/portage/binrepos.conf/gentoobinhost.conf",
                         f"[gentoobinhost]\npriority = 1\nsync-uri = {BINHOST.format(cpu=r.cpu)}\nverify-signature = true\n")
@@ -100,7 +92,9 @@ def portage(r: Recipe) -> Step:
         script += "rm -f /etc/portage/binrepos.conf/gentoobinhost.conf\n"
     # Dracut runs in a container: it must not look at the machine it runs on.
     script += _file("/etc/dracut.conf.d/lfsbuilder.conf", 'hostonly="no"\ncompress="zstd"\n')
-    script += f"eselect profile set {shlex.quote(r.profile)}\neselect profile show\n"
+    # The distribution's repository, mounted read-only for the build like Gentoo's (runner.Shared).
+    script += _file("/etc/portage/repos.conf/argo.conf", f"[{overlay.REPO}]\nlocation = {overlay.LOCATION}\n")
+    script += f"eselect profile set {shlex.quote(overlay.profile_name(r))}\neselect profile show\n"
     return Step("portage", "Portage set up from the recipe", script)
 
 
@@ -109,7 +103,9 @@ def world() -> Step:
 
 
 def package(atom: str) -> Step:
-    return Step(atom.replace("/", "_"), atom, f"set -e\nemerge --noreplace --verbose {shlex.quote(atom)}\n", package=atom)
+    # --oneshot: not in the world file; argo-meta (the argo step) holds the recipe's packages there,
+    # so one taken out of the recipe goes from installed systems with --depclean.
+    return Step(atom.replace("/", "_"), atom, f"set -e\nemerge --noreplace --oneshot --verbose {shlex.quote(atom)}\n", package=atom)
 
 
 def kernel(r: Recipe) -> Step:
@@ -219,111 +215,16 @@ def installer(r: Recipe) -> Step:
     return Step("installer", "GRUB, disk tools and the installer", script)
 
 
-BRANDING = Path(__file__).resolve().parent.parent / "branding"  # the PNGs made by branding/render.sh
-ARGO = "/usr/share/argo"
-
-
-def _binary(path: str, data: bytes) -> str:
-    """A shell command writing `data` to `path`, as base64 in the script (so it is part of the step's fingerprint)."""
-    encoded = base64.encodebytes(data).decode()
-    return f"mkdir -p {shlex.quote(path.rsplit('/', 1)[0])}\nbase64 -d > {shlex.quote(path)} << 'LFSBUILDER_EOF'\n{encoded}LFSBUILDER_EOF\n"
-
-
-GDM_PROFILE = "user-db:user\nsystem-db:gdm\nfile-db:/usr/share/gdm/greeter-dconf-defaults\n"
-USER_PROFILE = "user-db:user\nsystem-db:local\n"
-
-
-def branding(r: Recipe) -> Step:
-    """The logo and the login screens. The pictures go to /usr/share/argo and
-    the logo is the icon "argo-linux" (os-release's LOGO, GNOME's About
-    page); each login screen the recipe starts gets them: GDM its logo and
-    GNOME the background as wallpaper (dconf), SDDM the Breeze theme (it
-    showed its plain default) with the background, LightDM's GTK greeter
-    the background. Files no package owns, so updates keep them."""
+def argo(r: Recipe) -> Step:
+    """The distribution's packages (overlay.py): argo-meta, which holds the
+    recipe's packages in the world file, and argo-release, which brings
+    os-release, the logo, the wallpapers and the login screens. Built from
+    the argo repository like any other package, so they are published
+    and updated like the rest."""
     script = "set -e\n"
-    for name in ("argo-background-1920x1080.png", "argo-background-plain-1920x1080.png", "argo-wordmark-440.png",
-                 "argo-wordmark-light-440.png", "argo-256.png", "argo-grub-1024x768.png"):  # (GRUB's: the installer)
-        script += _binary(f"{ARGO}/{name}", (BRANDING / name).read_bytes())
-    for size in (64, 128, 256, 512):
-        script += _binary(f"/usr/share/icons/hicolor/{size}x{size}/apps/argo-linux.png", (BRANDING / f"argo-{size}.png").read_bytes())
-    script += f"mkdir -p /usr/share/pixmaps && cp {ARGO}/argo-256.png /usr/share/pixmaps/argo-linux.png\n"
-    script += "! command -v gtk-update-icon-cache >/dev/null || gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor\n"
-    background = f"{ARGO}/argo-background-1920x1080.png"
-    if "gdm" in r.services:
-        script += _file("/etc/dconf/profile/gdm", GDM_PROFILE)
-        script += _file("/etc/dconf/db/gdm.d/01-argo", f"[org/gnome/login-screen]\nlogo='{ARGO}/argo-wordmark-light-440.png'\n")
-        script += _file("/etc/dconf/profile/user", USER_PROFILE)
-        script += _file("/etc/dconf/db/local.d/01-argo",
-                        f"[org/gnome/desktop/background]\npicture-uri='file://{background}'\npicture-uri-dark='file://{background}'\n"
-                        f"[org/gnome/desktop/screensaver]\npicture-uri='file://{background}'\n")
-        script += "dconf update\n"
-    if "sddm" in r.services:
-        script += _file("/etc/sddm.conf.d/50-argo.conf", "[Theme]\nCurrent=breeze\n")
-        # Breeze puts its clock where the background's logo is: the plain sea, and Breeze's own logo (at the bottom).
-        script += _file("/usr/share/sddm/themes/breeze/theme.conf.user",
-                        f"[General]\ntype=image\nbackground={ARGO}/argo-background-plain-1920x1080.png\n"
-                        f"showlogo=shown\nlogo={ARGO}/argo-wordmark-light-440.png\n")
-    if "lightdm" in r.services:
-        # The greeter reads /etc/lightdm/lightdm-gtk-greeter.conf last, and Gentoo's sets background= (its own picture).
-        script += f"sed -i 's|^#\\?background=.*|background={background}|' /etc/lightdm/lightdm-gtk-greeter.conf\n"
-        script += f"grep -qx 'background={background}' /etc/lightdm/lightdm-gtk-greeter.conf\n"
-    if "kde-plasma/plasma-meta" in r.packages:
-        # Plasma's default wallpaper is the look-and-feel package's [Wallpaper] Image: a package of our
-        # own (Breeze's defaults with our wallpaper; the rest falls back to Breeze), chosen system-wide.
-        script += _file("/usr/share/wallpapers/Argo/metadata.json", PLASMA_WALLPAPER)
-        script += f"mkdir -p /usr/share/wallpapers/Argo/contents/images && cp {background} /usr/share/wallpapers/Argo/contents/images/1920x1080.png\n"
-        script += _file(f"/usr/share/plasma/look-and-feel/{PLASMA_LNF}/metadata.json", PLASMA_LNF_METADATA)
-        script += (f"mkdir -p /usr/share/plasma/look-and-feel/{PLASMA_LNF}/contents\n"
-                   f"sed 's/^Image=.*/Image=Argo/' /usr/share/plasma/look-and-feel/org.kde.breeze.desktop/contents/defaults"
-                   f" > /usr/share/plasma/look-and-feel/{PLASMA_LNF}/contents/defaults\n"
-                   f"grep -qx 'Image=Argo' /usr/share/plasma/look-and-feel/{PLASMA_LNF}/contents/defaults\n")
-        script += ("touch /etc/xdg/kdeglobals\n"
-                   "if grep -q '^LookAndFeelPackage=' /etc/xdg/kdeglobals; then\n"
-                   f"    sed -i 's/^LookAndFeelPackage=.*/LookAndFeelPackage={PLASMA_LNF}/' /etc/xdg/kdeglobals\n"
-                   "else\n"
-                   f"    printf '\\n[KDE]\\nLookAndFeelPackage={PLASMA_LNF}\\n' >> /etc/xdg/kdeglobals\n"
-                   "fi\n")
-    if "xfce-base/xfce4-meta" in r.packages:
-        # xfdesktop's default wallpaper is a file of its own, built into it: ours in its place, now and
-        # (a Portage hook, run as the package is installed) at every update of xfdesktop.
-        script += _file("/etc/portage/env/xfce-base/xfdesktop", XFDESKTOP_HOOK.format(argo=ARGO))
-        script += f"( ED=/; source /etc/portage/env/xfce-base/xfdesktop; argo_wallpaper )\n"
-
-    return Step("branding", f"{r.name}: logo and login screen", script)
-
-
-PLASMA_LNF = "org.argolinux.desktop"
-PLASMA_LNF_METADATA = """{
-    "KPackageStructure": "Plasma/LookAndFeel",
-    "KPlugin": {
-        "Id": "org.argolinux.desktop",
-        "Name": "Argo Linux",
-        "Description": "Breeze, with Argo Linux's wallpaper",
-        "License": "GPL-2.0-or-later"
-    }
-}"""
-PLASMA_WALLPAPER = """{
-    "KPlugin": {
-        "Id": "Argo",
-        "Name": "Argo Linux",
-        "License": "CC-BY-SA-4.0"
-    }
-}"""
-XFDESKTOP_HOOK = """# Written by lfsbuilder: Argo Linux's wallpaper as xfdesktop's default (the file built into it).
-argo_wallpaper() {{
-    local dir="${{ED%/}}/usr/share/backgrounds/xfce"
-    mkdir -p "$dir"
-    rm -f "$dir/xfce-x.svg"
-    # The picture inside the SVG (a data: URI): GdkPixbuf, which xfdesktop loads it with, doesn't
-    # know the file's directory, so a picture beside it isn't found (a black desktop).
-    {{
-        printf '%s' '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><image width="1920" height="1080" href="data:image/png;base64,'
-        base64 -w0 {argo}/argo-background-1920x1080.png
-        printf '%s\\n' '"/></svg>'
-    }} > "$dir/xfce-x.svg"
-}}
-post_src_install() {{ argo_wallpaper; }}
-"""
+    script += f"# the argo packages: {overlay.packages_digest(r)}\n"
+    script += f"emerge --verbose {overlay.CATEGORY}/argo-meta\n"
+    return Step("argo", f"{r.name} {r.version}: argo-release, argo-meta", script)
 
 
 TRUST = Path(__file__).with_name("trust.sh")
@@ -346,7 +247,23 @@ def updates(r: Recipe) -> Step:
     # Gentoo's latest, which would run ahead of the packages; its head must be signed by Gentoo.
     script += "emerge --noreplace --verbose dev-vcs/git\n"
     script += _file("/etc/portage/repos.conf/gentoo.conf", REPOS_CONF.format(server=r.binhost, branch=r.stem))
+    script += _file("/etc/portage/repos.conf/argo.conf", ARGO_REPOS_CONF.format(
+        repo=overlay.REPO, location=overlay.LOCATION, server=r.binhost, branch=r.stem, key=BINHOST_KEY))
     return Step("updates", f"Updates from {r.binhost}", script)
+
+
+ARGO_REPOS_CONF = """# Written by lfsbuilder: the distribution's own repository, from its server, signed with its key.
+[{repo}]
+location = {location}
+sync-type = git
+sync-uri = {server}argo.git
+sync-git-clone-extra-opts = --branch {branch} --single-branch
+sync-git-verify-commit-signature = yes
+sync-openpgp-key-path = {key}
+# The key file is the trust anchor: ours is on no keyserver, and refreshing it from one fails the check.
+sync-openpgp-key-refresh = no
+auto-sync = yes
+"""
 
 
 REPOS_CONF = """# Written by lfsbuilder: the repository comes from the distribution's server.
@@ -381,16 +298,12 @@ def services(r: Recipe) -> Step | None:
 
 
 def all_steps(r: Recipe) -> list[Step]:
-    packages = list(r.packages)
-    if r.network["manager"] == "networkmanager" and "net-misc/networkmanager" not in packages:
-        packages.append("net-misc/networkmanager")
-    if r.sudo and "app-admin/sudo" not in packages:
-        packages.append("app-admin/sudo")
+    packages = overlay.packages(r)
     enabled = services(r)
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
     steps = [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages),
-             *([enabled] if enabled else []), users(r), branding(r), installer(r), *([updates(r)] if r.binhost else [])]
+             *([enabled] if enabled else []), users(r), argo(r), installer(r), *([updates(r)] if r.binhost else [])]
     # Each fix goes in at the start of the step it was found in (fixes.py).
     names = {s.name for s in steps}
     for fix in r.fixes:

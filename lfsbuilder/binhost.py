@@ -39,6 +39,7 @@ from . import gentoo
 from .recipe import Recipe
 
 REPOSITORY = "gentoo.git"  # in www/; a branch per recipe
+OVERLAY = "argo.git"  # the distribution's own repository (overlay.py); a branch per recipe
 
 KEY_TYPE = ("ed25519", "sign", "never")  # gpg --quick-gen-key: algorithm, usage, expiry
 
@@ -187,6 +188,36 @@ def publish_repository(tools, r: Recipe, keyring: Path, www: Path) -> None:
     tools.run("git", "-C", inside, "gc", "--quiet", "--prune=now")  # what no branch needs any more
 
 
+def publish_overlay(tools, r: Recipe, tree: Path, home: Path, www: Path) -> str:
+    """Commits the recipe's argo repository (`tree`, written by overlay.write)
+    to www/argo.git as the branch <recipe name>, signed with the package
+    signing key (systems check it: steps.updates). A new commit only when
+    the tree changed. Returns the branch's commit."""
+    git = www / OVERLAY
+    if not (git / "HEAD").exists():
+        www.mkdir(parents=True, exist_ok=True)
+        tools.run("git", "init", "--quiet", "--bare", tools.inside(git))
+    fpr = fingerprint(tools, r.path.parent / r.binhost_key)
+    script = f"""set -euo pipefail
+export GIT_DIR="$1" GIT_WORK_TREE="$2" GIT_INDEX_FILE=/tmp/index GNUPGHOME="$3"
+git read-tree --empty
+git add -A
+tree=$(git write-tree)
+parent=$(git rev-parse -q --verify "refs/heads/{r.stem}" || true)
+if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{{tree}}")" = "$tree" ]; then
+    echo "$parent"; exit 0
+fi
+commit=$(git -c user.name="{r.name}" -c user.email=packages@argo-linux.invalid commit-tree -S{fpr} "$tree" \
+    ${{parent:+-p "$parent"}} -m "{r.name} {r.version} ({r.stem})")
+git update-ref "refs/heads/{r.stem}" "$commit"
+git symbolic-ref HEAD "refs/heads/{r.stem}"
+git verify-commit "$commit" >/dev/null 2>&1
+echo "$commit"
+"""
+    out = tools.run("bash", "-c", script, "bash", tools.inside(git), tools.inside(tree), tools.inside(home), capture=True).stdout
+    return out.split()[-1]
+
+
 GIT_HTTP_BACKEND = Path(subprocess.run(["git", "--exec-path"], text=True, capture_output=True).stdout.strip() or "/usr/lib/git-core") / "git-http-backend"
 
 
@@ -196,7 +227,7 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def _is_git(self) -> bool:
-        return self.path.startswith(f"/{REPOSITORY}/")
+        return self.path.startswith((f"/{REPOSITORY}/", f"/{OVERLAY}/"))
 
     def do_GET(self):
         if self._is_git():

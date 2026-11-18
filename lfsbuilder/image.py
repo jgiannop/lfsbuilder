@@ -48,12 +48,7 @@ def system_files(r: Recipe, live: bool = False) -> dict[str, tuple[str, str]]:
         "etc/hosts": ("file", f"127.0.0.1  localhost\n::1        localhost\n127.0.1.1  {fqdn} {r.hostname}\n"),
         "etc/fstab": ("file", f"# Written by lfsbuilder\n{root}"),
     }
-    # Who the system is: the distribution's name, not Gentoo's (Gentoo's name and logo are Gentoo's to use).
-    # A file in place of baselayout's link to /usr/lib/os-release; /etc is protected, so updates keep it.
-    files["etc/os-release"] = ("file", "".join(f"{k}={json.dumps(v)}\n" for k, v in (
-        ("NAME", r.name), ("ID", r.os_id), ("ID_LIKE", "gentoo"), ("VERSION", r.version), ("VERSION_ID", r.version),
-        ("PRETTY_NAME", f"{r.name} {r.version}"), ("ANSI_COLOR", "1;34"), ("LOGO", "argo-linux"))))  # the branding step's icon
-    files["etc/issue"] = ("file", f"\n{r.name} {r.version} (\\s \\m \\r) \\t\n\n")  # agetty's \\s etc.
+    # os-release and /etc/issue (who the system is) come from argo-base/argo-release (overlay.py).
     if r.init == "systemd":
         files["etc/resolv.conf"] = ("link", "../run/systemd/resolve/stub-resolv.conf")
     else:

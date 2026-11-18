@@ -15,7 +15,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from lfsbuilder import check, fixes, image, recipe, repair, runner, steps
+from lfsbuilder import check, fixes, image, overlay, recipe, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES = ROOT / "recipes"
@@ -202,36 +202,72 @@ class Logs(unittest.TestCase):
         self.assertIn("(hidden)", text)
 
 
-class Identity(unittest.TestCase):
+class Overlay(unittest.TestCase):
+    """The argo repository (overlay.py): what carries the recipe to installed systems."""
+
+    def release(self, name: str) -> str:
+        return overlay.files(recipe.load(RECIPES / f"{name}.toml"))[f"argo-base/argo-release/argo-release-0.1.ebuild"].decode()
+
     def test_the_system_says_its_own_name(self):
         r = recipe.load(RECIPES / "example.toml")
-        files = image.system_files(r)
-        self.assertEqual(files["etc/os-release"][0], "file")  # a file in place of baselayout's link
-        release = dict(line.split("=", 1) for line in files["etc/os-release"][1].splitlines())
-        self.assertEqual((release["NAME"], release["ID"], release["ID_LIKE"], release["PRETTY_NAME"]),
-                         ('"Argo Linux"', '"argo-linux"', '"gentoo"', '"Argo Linux 0.1"'))
-        self.assertIn("Argo Linux 0.1", files["etc/issue"][1])
-        self.assertNotIn("Gentoo", files["etc/os-release"][1] + files["etc/issue"][1])
+        files = overlay.files(r)
+        release = dict(line.split("=", 1) for line in files["argo-base/argo-release/files/os-release"].decode().splitlines())
+        self.assertEqual((release["NAME"], release["ID"], release["ID_LIKE"], release["PRETTY_NAME"], release["LOGO"]),
+                         ('"Argo Linux"', '"argo-linux"', '"gentoo"', '"Argo Linux 0.1"', '"argo-linux"'))
+        self.assertIn(b"Argo Linux 0.1", files["argo-base/argo-release/files/issue"])
+        self.assertNotIn("etc/os-release", image.system_files(r))  # the package's, not the export's
         self.assertEqual(r.short_name, "Argo")
 
+    def test_the_profile_carries_the_use_flags_and_the_meta_package_the_packages(self):
+        r = recipe.load(RECIPES / "gnome.toml")
+        files = overlay.files(r)
+        self.assertEqual(files["profiles/argo/gnome/parent"], f"gentoo:{r.profile}\n".encode())
+        self.assertIn(b"net-libs/ngtcp2 gnutls", files["profiles/argo/gnome/package.use"])
+        self.assertIn(b"sys-kernel/installkernel dracut", files["profiles/argo/gnome/package.use"])
+        meta = files["argo-base/argo-meta/argo-meta-0.1.ebuild"].decode()
+        for atom in ["argo-base/argo-release", *r.packages, "net-misc/networkmanager", "app-admin/sudo"]:
+            self.assertIn(f"\t{atom}\n", meta)
+        self.assertNotIn("USE=", steps.make_conf(r))  # the profile's now
+        portage = steps.portage(r).script
+        self.assertIn(overlay.profile_digest(r), portage)
+        self.assertIn("eselect profile set argo:argo/gnome", portage)
+
+    def test_a_package_added_changes_the_argo_step_not_the_profile(self):
+        r = recipe.load(RECIPES / "example.toml")
+        more = dataclasses.replace(r, packages=[*r.packages, "app-misc/htop"])
+        self.assertEqual(overlay.profile_digest(r), overlay.profile_digest(more))
+        self.assertNotEqual(overlay.packages_digest(r), overlay.packages_digest(more))
+        self.assertIn(overlay.packages_digest(more), steps.argo(more).script)
+        self.assertIn("--oneshot", steps.package("app-misc/htop").script)  # argo-meta holds them in the world file
+
+    def test_the_version_must_be_a_package_version(self):
+        r = recipe.load(RECIPES / "example.toml")
+        with self.assertRaises(overlay.OverlayError):
+            overlay.files(dataclasses.replace(r, version="0.1-beta"))
+
     def test_each_desktop_gets_its_own_login_screen(self):
-        marks = {"gdm": "org/gnome/login-screen", "sddm": "Current=breeze", "lightdm": "/etc/lightdm/lightdm-gtk-greeter.conf"}
+        marks = {"gdm": "dconf update", "sddm": "sddm.conf.d", "lightdm": "lightdm-gtk-greeter.conf"}
         for name, dm in (("example", None), ("gnome", "gdm"), ("plasma", "sddm"), ("xfce", "lightdm")):
             with self.subTest(name):
-                script = steps.branding(recipe.load(RECIPES / f"{name}.toml")).script
-                self.assertIn("/usr/share/icons/hicolor/256x256/apps/argo-linux.png", script)
+                ebuild = self.release(name)
+                self.assertIn("/usr/share/icons/hicolor/${s}x${s}/apps", ebuild)
                 for other, mark in marks.items():
-                    self.assertEqual(mark in script, other == dm)
+                    self.assertEqual(mark in ebuild, other == dm)
 
     def test_each_desktop_gets_the_wallpaper_its_own_way(self):
-        plasma = steps.branding(recipe.load(RECIPES / "plasma.toml")).script
-        xfce = steps.branding(recipe.load(RECIPES / "xfce.toml")).script
+        plasma, xfce = self.release("plasma"), self.release("xfce")
         self.assertIn("LookAndFeelPackage=org.argolinux.desktop", plasma)
-        self.assertIn("Image=Argo", plasma)
+        self.assertIn(b"Image=Argo", overlay.files(recipe.load(RECIPES / "plasma.toml"))["argo-base/argo-release/files/lnf-defaults"])
         self.assertNotIn("xfdesktop", plasma)
-        self.assertIn("/etc/portage/env/xfce-base/xfdesktop", xfce)
-        self.assertIn("post_src_install", xfce)
+        self.assertIn("/etc/portage/env/xfce-base", xfce)
+        self.assertIn(b"post_src_install", overlay.files(recipe.load(RECIPES / "xfce.toml"))["argo-base/argo-release/files/xfdesktop.env"])
         self.assertNotIn("LookAndFeelPackage", xfce)
+
+    def test_systems_sync_it_from_the_server_signed(self):
+        script = steps.updates(recipe.load(RECIPES / "example.toml")).script
+        self.assertIn("sync-uri = http://10.0.2.2:8080/argo.git", script)
+        self.assertIn(f"sync-openpgp-key-path = {steps.BINHOST_KEY}", script)
+        self.assertIn("sync-openpgp-key-refresh = no", script)  # ours is on no keyserver
 
     def test_the_installer_puts_our_picture_behind_grub(self):
         text = steps.INSTALLER.read_text()

@@ -23,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import binhost, check as checks, fixes, gentoo, image, recipe as recipes, repair, runner, steps
+from . import binhost, check as checks, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
@@ -88,8 +88,11 @@ def plan(r: recipes.Recipe) -> int:
 def shared(r: recipes.Recipe) -> runner.Shared:
     # Binary packages are kept apart for each CPU level and compiler flags:
     # a package built for one would be wrong for another.
+    # The argo repository is written from the recipe each time (overlay.write: at once, and the same
+    # recipe writes the same files); the steps' fingerprints hold its digests.
+    tree = overlay.write(r, WORK / "overlay" / r.stem)
     return runner.Shared(repository_path(r), "lfsbuilder-distfiles", f"lfsbuilder-binpkgs-{r.binary_set}", r.jobs,
-                         f"lfsbuilder-binhost-{r.binary_set}")
+                         f"lfsbuilder-binhost-{r.binary_set}", tree)
 
 
 def check(r: recipes.Recipe) -> int:
@@ -283,6 +286,9 @@ def publish(r: recipes.Recipe) -> int:
               f"signatures) in {(BINHOST / 'www' / r.binary_set).relative_to(ROOT)}; "
               f"systems of {r.path.name} fetch them from {r.binhost}{r.binary_set}/", flush=True)
         binhost.publish_repository(tools(), r, GENTOO / "keys" / "gnupg", BINHOST / "www")
+        commit = binhost.publish_overlay(tools(), r, shared(r).overlay, BINHOST / "gnupg", BINHOST / "www")
+        print(f"published the argo repository ({r.version}) as the branch {r.stem} of "
+              f"{(BINHOST / 'www' / binhost.OVERLAY).relative_to(ROOT)} (commit {commit[:12]}, signed)", flush=True)
         print(f"published the repository at {r.repository[:12]} as the branch {r.stem} of "
               f"{(BINHOST / 'www' / binhost.REPOSITORY).relative_to(ROOT)}; they sync {r.binhost}{binhost.REPOSITORY}")
     except (binhost.BinhostError, subprocess.CalledProcessError) as error:
