@@ -29,6 +29,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import estimate
 from .steps import EMERGE_OPTS, Step
 
 IMAGE = "lfsbuilder-build"  # every checkpoint is IMAGE:<fingerprint>
@@ -169,8 +170,10 @@ def failure_report(p: Planned, logs: Path, lines: int = 40) -> str:
     return "\n".join(out)
 
 
-def run(planned: list[Planned], base: str, shared: Shared, logs: Path, quiet: bool = False) -> Planned | None:
-    """Runs the steps not done yet; returns the one that failed, or None."""
+def run(planned: list[Planned], base: str, shared: Shared, logs: Path, quiet: bool = False,
+        times: Path | None = None) -> Planned | None:
+    """Runs the steps not done yet; returns the one that failed, or None.
+    With `times`, how long each finished step took is recorded there (estimate.py)."""
     logs.mkdir(parents=True, exist_ok=True)
     for volume in (shared.distfiles, shared.binpkgs):
         _docker("volume", "create", volume)
@@ -199,6 +202,8 @@ def run(planned: list[Planned], base: str, shared: Shared, logs: Path, quiet: bo
             print(failure_report(p, logs))
             return p
         print(f"  {took:.0f}s", flush=True)
+        if times:
+            estimate.record(times, p.fingerprint, p.step.name, took)
         parent = p.image
     if not quiet:
         print(f"\nthe last checkpoint: {parent}")

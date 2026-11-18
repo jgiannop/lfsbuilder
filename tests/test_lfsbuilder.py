@@ -15,7 +15,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from lfsbuilder import check, fixes, image, overlay, recipe, repair, runner, steps
+from lfsbuilder import check, estimate, fixes, image, overlay, recipe, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES = ROOT / "recipes"
@@ -183,6 +183,39 @@ class Steps(unittest.TestCase):
         same = sum(x.fingerprint == y.fingerprint for x, y in zip(a, other))
         self.assertEqual(same, 5)  # portage, world, kernel, system, nano: only what follows the change differs
         self.assertNotEqual(a[0].fingerprint, runner.plan(steps.all_steps(r), "another seed")[0].fingerprint)
+
+
+class Estimates(unittest.TestCase):
+    def test_measured_guessed_and_unknown(self):
+        r = recipe.load(RECIPES / "example.toml")
+        p = runner.plan(steps.all_steps(r), "seed")
+        with tempfile.TemporaryDirectory() as d:
+            times = Path(d) / "step-times.json"
+            self.assertEqual(estimate.load(times), {"fingerprints": {}, "names": {}})  # nothing recorded yet
+            estimate.record(times, p[1].fingerprint, p[1].step.name, 120.4)         # this very step
+            estimate.record(times, "another recipe's", p[2].step.name, 60)          # the same name elsewhere:
+            estimate.record(times, "and a third", p[2].step.name, 300)              # the longest is the guess
+            data = estimate.load(times)
+        e = estimate.estimate(p, data, built={p[0].image})
+        how = [h for _, _, h in e.steps]
+        self.assertEqual(how[:3], ["done", "measured", "guess"])
+        self.assertEqual(e.seconds, 120 + 300)
+        self.assertEqual(e.unknown, [s.step.name for s in p[3:]])
+        self.assertIn("partly guessed", e.text())
+        self.assertIn(f"{len(p) - 3} never built before", e.text())
+        self.assertEqual(estimate.estimate(p, data, built={s.image for s in p}).text(), "Everything is built.")
+
+    def test_names_keep_the_last_few(self):
+        with tempfile.TemporaryDirectory() as d:
+            times = Path(d) / "t.json"
+            for n in range(estimate.KEEP + 3):
+                estimate.record(times, f"f{n}", "world", n)
+            self.assertEqual(estimate.load(times)["names"]["world"], list(range(3, estimate.KEEP + 3)))
+
+    def test_durations(self):
+        self.assertEqual(estimate.duration(20), "under a minute")
+        self.assertEqual(estimate.duration(38 * 60), "38 min")
+        self.assertEqual(estimate.duration(65 * 60 + 10), "1 h 05 min")
 
 
 class Logs(unittest.TestCase):

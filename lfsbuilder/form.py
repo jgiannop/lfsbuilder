@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import binhost, gentoo, presets, recipe as recipes, steps
+from . import __main__ as cli, binhost, estimate, gentoo, presets, recipe as recipes, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT = ROOT / "recipes" / "example.toml"
@@ -123,8 +123,13 @@ class Form(QMainWindow):
         self.path_label = QLabel()
         layout.addWidget(self.path_label)
         self.progress = QLabel()
+        self.estimate = QLabel(wordWrap=True)
+        self.estimate.setToolTip("From how long the same steps took before (work/step-times.json); "
+                                 "a step never built anywhere has no estimate")
+        self.run_estimate: estimate.Estimate | None = None
         layout.addWidget(tabs)
         layout.addLayout(buttons)
+        layout.addWidget(self.estimate)
         layout.addWidget(self.progress)
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(top)
@@ -334,6 +339,17 @@ class Form(QMainWindow):
         self.published.setText(text)
         self.published.setStyleSheet("color: #b00020;" if warning else "")
 
+    def _estimate_of(self, r: recipes.Recipe) -> estimate.Estimate | None:
+        try:
+            p = cli.planned(r)
+        except (OSError, recipes.RecipeError):
+            return None
+        return estimate.estimate(p, estimate.load(cli.TIMES), estimate.built_images()) if p else None
+
+    def _show_estimate(self, r: recipes.Recipe) -> None:
+        e = self._estimate_of(r)
+        self.estimate.setText(f"Build: {e.text()}" if e else "Build: Prepare first (the stage3 and the repository aren't fetched yet).")
+
     def _network_fields(self) -> None:
         for field in (self.address, self.gateway, self.dns):
             field.setEnabled(self.static.isChecked())
@@ -355,6 +371,7 @@ class Form(QMainWindow):
         self.server_key.setText(r.binhost_key or DEFAULT_KEY)
         self._update_fields()
         self._show_published()
+        self._show_estimate(r)
         self.init.setCurrentIndex(self.init.findData(r.init))
         self.cpu.setCurrentIndex(self.cpu.findData(r.cpu))
         self.binary.setChecked(r.binary_packages)
@@ -503,6 +520,7 @@ class Form(QMainWindow):
             return False
         self.path = path
         self.path_label.setText(f"Recipe: {path}")
+        self._show_estimate(recipes.load(path))
         return True
 
     def save(self) -> bool:
@@ -535,6 +553,7 @@ class Form(QMainWindow):
         self.stop_button.setEnabled(True)
         arguments = [command, *(["--repair"] if command == "build" and self.repair.isChecked() else []), str(self.path)]
         self.total_steps = len(steps.all_steps(self.recipe()))
+        self.run_estimate = self._estimate_of(recipes.load(self.path)) if command == "build" else None
         self.progress.setText(f"Running: {command} …")
         self.output.appendPlainText(f"$ python3 -m lfsbuilder {' '.join(arguments)}\n")
         self.process.start("python3", ["-u", "-m", "lfsbuilder", *arguments])
@@ -548,7 +567,12 @@ class Form(QMainWindow):
         lines = [m for m in map(_STEP_LINE.match, self.output_text.splitlines()) if m]
         if lines:
             last = lines[-1]
-            self.progress.setText(f"Step {last['number']} of {self.total_steps}: {last['title']}")
+            text = f"Step {last['number']} of {self.total_steps}: {last['title']}"
+            if self.run_estimate:
+                left = [(sec, how) for p, sec, how in self.run_estimate.steps if p.number >= int(last['number']) and how != "done"]
+                if left and all(sec is not None for sec, _ in left):
+                    text += f" (about {estimate.duration(sum(sec for sec, _ in left))} left, this step included)"
+            self.progress.setText(text)
 
     def _finished(self, command: str, code: int) -> None:
         for b in self.run_buttons:
@@ -558,6 +582,8 @@ class Form(QMainWindow):
         self.progress.setText(f"{command}: {'done' if code == 0 else 'failed (exit code %d)' % code}")
         if command == "publish":
             self._show_published()
+        if command in ("build", "check"):
+            self._show_estimate(recipes.load(self.path))
         if command == "check":
             suggested = [m for m in map(_SUGGESTED.match, self.output_text.splitlines()) if m]
             if suggested:

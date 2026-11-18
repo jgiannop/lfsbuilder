@@ -23,13 +23,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import binhost, check as checks, clones, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
+from . import binhost, check as checks, clones, estimate, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
 GENTOO = WORK / "gentoo"  # keys/, stage3/, repos/: what recipes pin, kept
 TOOLS_IMAGE = "lfsbuilder-host:dev"
 BINHOST = WORK / "binhost"  # gnupg/: the package signing key (private: back it up); www/: what serve serves
+TIMES = WORK / "step-times.json"  # how long each step took (estimate.py)
 PUBLIC_KEY = ROOT / "recipes" / "keys" / "binhost.asc"
 
 
@@ -75,13 +76,20 @@ def planned(r: recipes.Recipe) -> list[runner.Planned] | None:
     return runner.plan(steps.all_steps(r), seed)
 
 
+def build_estimate(r: recipes.Recipe, p: list[runner.Planned]) -> estimate.Estimate:
+    return estimate.estimate(p, estimate.load(TIMES), estimate.built_images())
+
+
 def plan(r: recipes.Recipe) -> int:
     p = planned(r)
     if p is None:
         return 1
-    for step in p:
-        state = "done" if runner.image_exists(step.image) else ""
+    e = build_estimate(r, p)
+    for step, seconds, how in e.steps:
+        state = {"done": "done", "measured": f"~{estimate.duration(seconds)}",
+                 "guess": f"~{estimate.duration(seconds)}?", "": "no estimate"}[how]
         print(f"{step.number:>3}  {step.step.title[:56]:56}  {state}")
+    print(f"\n{e.text()}")
     return 0
 
 
@@ -132,7 +140,8 @@ def build(r: recipes.Recipe, until: str | None, repair_failures: bool = False) -
             p = p[: names.index(until) + 1]
         base = gentoo.stage3_image(stage3_path(r), stage3_image(r))
         logs = WORK / f"build-{r.stem}" / "logs"
-        failed = runner.run(p, base, shared(r), logs)
+        print(f"estimate: {build_estimate(r, p).text()}\n", flush=True)
+        failed = runner.run(p, base, shared(r), logs, times=TIMES)
         if failed is None:
             return 0
         if not repair_failures:
