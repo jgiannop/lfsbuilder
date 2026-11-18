@@ -240,6 +240,18 @@ class Identity(unittest.TestCase):
         self.assertIn("background_image /boot/grub/argo.png", image.GRUB_CFG)
 
 
+class Publishing(unittest.TestCase):
+    def test_gentoos_binaries_go_out_with_gentoos_signatures(self):
+        from lfsbuilder import binhost
+        script = binhost._publish_script("F" * 40, 1000, 1000)
+        self.assertIn("/cache/gentoobinhost", script)
+        self.assertIn('grep -qxF "CPV: $cpv" /src/Packages && continue', script)  # what we built wins
+        self.assertIn("in *image.tar.*.sig*) continue", script)  # Gentoo's aren't signed again
+        self.assertNotIn("| grep -q", script)  # pipefail would fail on SIGPIPE
+        shared = runner.Shared(Path("/r"), "d", "b", 1, "lfsbuilder-binhost-x").args()
+        self.assertIn("lfsbuilder-binhost-x:/var/cache/binhost", shared)
+
+
 class Branding(unittest.TestCase):
     def test_the_logo_files_are_well_formed_and_rendered(self):
         import xml.dom.minidom

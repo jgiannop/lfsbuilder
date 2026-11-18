@@ -84,37 +84,63 @@ def _publish_script(fpr: str, uid: int, gid: int) -> str:
     return f"""set -euo pipefail
 mkdir -p /run/lock
 # A copy of the signing keyring the container may write to (gpg's lock and
-# seed files), trusting its own key: indexing checks the new signatures.
+# seed files), trusting its own key and Gentoo's release keys: indexing
+# checks every signature, ours and Gentoo's.
 cp -a /key /tmp/gnupg && chmod 700 /tmp/gnupg
-echo "{fpr}:6:" | gpg --homedir /tmp/gnupg --batch --quiet --import-ownertrust
+gpg --homedir /tmp/gnupg --batch --quiet --import /usr/share/openpgp-keys/gentoo-release.asc 2>/dev/null
+{{ echo "{fpr}:6:"
+   gpg --homedir /tmp/gnupg --batch --with-colons --show-keys /usr/share/openpgp-keys/gentoo-release.asc |
+       awk -F: '$1 == "pub" {{ want = 1 }} $1 == "fpr" && want {{ print $10 ":6:"; want = 0 }}'
+}} | gpg --homedir /tmp/gnupg --batch --quiet --import-ownertrust
 gpg --homedir /tmp/gnupg --batch --quiet --check-trustdb 2>/dev/null
 gpg --homedir /tmp/gnupg --batch --list-secret-keys "{fpr}" >/dev/null || {{ echo "work/binhost/gnupg lacks the private key {fpr}" >&2; exit 1; }}
 chmod -R a+rX /tmp/gnupg  # Portage checks signatures as nobody
 cd /src
 [ -f Packages ] || {{ echo "no packages built in this set yet" >&2; exit 1; }}
+# Ours: what Portage's index lists (a stopped build can leave half-written files beside them).
 sed -n 's/^PATH: //p' Packages | while read -r path; do
     mkdir -p "/out/${{path%/*}}"
     cp -p "$path" "/out/$path"
 done
+# Gentoo's, as the builds downloaded them (signed by Gentoo), less what we built ourselves:
+# the one we built is the one installed.
+gentoos=0
+if [ -d /cache/gentoobinhost ]; then
+    cd /cache/gentoobinhost
+    while IFS= read -r -d '' path; do
+        path=${{path#./}}
+        name=${{path##*/}}
+        cpv="${{path%%/*}}/${{name%-*.gpkg.tar}}"
+        grep -qxF "CPV: $cpv" /src/Packages && continue
+        [ -e "/out/$path" ] && continue
+        mkdir -p "/out/${{path%/*}}"
+        cp -p "$path" "/out/$path"
+        gentoos=$((gentoos + 1))
+    done < <(find . -name '*.gpkg.tar' -print0)
+fi
 export PKGDIR=/out FEATURES="binpkg-signing" BINPKG_GPG_SIGNING_GPG_HOME=/tmp/gnupg \\
     BINPKG_GPG_SIGNING_KEY="{fpr}" BINPKG_GPG_VERIFY_GPG_HOME=/tmp/gnupg
-count=0
+ours=0
 while IFS= read -r -d '' package; do
+    case "$(tar -tf "$package")" in *image.tar.*.sig*) continue ;; esac  # signed already (Gentoo's); no pipe: pipefail
     gpkg-sign "$package" >/dev/null 2>/tmp/sign.log || {{ cat /tmp/sign.log >&2; exit 1; }}  # one file per call: it signs only its first
-    count=$((count + 1))
+    ours=$((ours + 1))
 done < <(find /out -name '*.gpkg.tar' -print0)
 emaint binhost --fix >/tmp/index.log 2>&1 || {{ cat /tmp/index.log >&2; exit 1; }}
 indexed=$(grep -c '^PATH: ' /out/Packages || true)
-[ "$indexed" = "$count" ] || {{ cat /tmp/index.log >&2; echo "signed $count packages, but the index lists $indexed" >&2; exit 1; }}
+total=$(find /out -name '*.gpkg.tar' | wc -l)
+[ "$indexed" = "$total" ] || {{ cat /tmp/index.log >&2; echo "$total packages, but the index lists $indexed (a signature that didn't check?)" >&2; exit 1; }}
 chown -R {uid}:{gid} /out
-echo "$count"
+echo "$ours $gentoos"
 """
 
 
-def publish(tools, r: Recipe, image: str, volume: str, home: Path, www: Path) -> int:
-    """Signs and publishes the recipe's set of binary packages in
-    www/<set>/. `image` is any checkpoint of the recipe (it has Portage and
-    gpg). Returns how many packages were published."""
+def publish(tools, r: Recipe, image: str, volume: str, cache: str, home: Path, www: Path) -> tuple[int, int]:
+    """Publishes the recipe's set of binary packages in www/<set>/: those
+    built here (the binpkgs volume), signed with our key, and Gentoo's that
+    the builds downloaded (the binhost cache volume), with Gentoo's
+    signatures. `image` is any checkpoint of the recipe (it has Portage and
+    gpg). Returns how many of each were published."""
     if not r.binhost:
         raise BinhostError(f"{r.path.name} has no [updates] server and key")
     fpr = fingerprint(tools, r.path.parent / r.binhost_key)
@@ -124,7 +150,7 @@ def publish(tools, r: Recipe, image: str, volume: str, home: Path, www: Path) ->
         shutil.rmtree(leftover, ignore_errors=True)
     new.mkdir(parents=True)
     result = subprocess.run(
-        ["docker", "run", "--rm", "--network", "none", "-v", f"{volume}:/src:ro", "-v", f"{home}:/key:ro",
+        ["docker", "run", "--rm", "--network", "none", "-v", f"{volume}:/src:ro", "-v", f"{cache}:/cache:ro", "-v", f"{home}:/key:ro",
          "-v", f"{new}:/out", image, "bash", "-c", _publish_script(fpr, os.getuid(), os.getgid())],
         text=True, capture_output=True)
     if result.returncode:
@@ -134,7 +160,8 @@ def publish(tools, r: Recipe, image: str, volume: str, home: Path, www: Path) ->
         target.rename(old)
     new.rename(target)
     shutil.rmtree(old, ignore_errors=True)
-    return int(result.stdout.split()[-1])
+    ours, gentoos = result.stdout.split()[-2:]
+    return int(ours), int(gentoos)
 
 
 def publish_repository(tools, r: Recipe, keyring: Path, www: Path) -> None:

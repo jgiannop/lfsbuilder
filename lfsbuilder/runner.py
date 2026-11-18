@@ -60,6 +60,7 @@ class Shared:
     distfiles: str  # volume names
     binpkgs: str
     jobs: int
+    binhost_cache: str = ""  # volume: Portage's cache of downloaded binaries (Gentoo's), kept to be published
 
     def args(self) -> list[str]:
         n = self.jobs or os.cpu_count() or 1
@@ -67,6 +68,7 @@ class Shared:
             "-v", f"{self.repository}:/var/db/repos/gentoo:ro",
             "-v", f"{self.distfiles}:/var/cache/distfiles",
             "-v", f"{self.binpkgs}:/var/cache/binpkgs",
+            *(["-v", f"{self.binhost_cache}:/var/cache/binhost"] if self.binhost_cache else []),
             "-e", f"MAKEOPTS=-j{n} -l{n}",
             # Several packages at once (binary packages are mostly unpacking), held back
             # by the load; in the environment, so it isn't in make.conf or the fingerprints.

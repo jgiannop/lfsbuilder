@@ -88,7 +88,8 @@ def plan(r: recipes.Recipe) -> int:
 def shared(r: recipes.Recipe) -> runner.Shared:
     # Binary packages are kept apart for each CPU level and compiler flags:
     # a package built for one would be wrong for another.
-    return runner.Shared(repository_path(r), "lfsbuilder-distfiles", f"lfsbuilder-binpkgs-{r.binary_set}", r.jobs)
+    return runner.Shared(repository_path(r), "lfsbuilder-distfiles", f"lfsbuilder-binpkgs-{r.binary_set}", r.jobs,
+                         f"lfsbuilder-binhost-{r.binary_set}")
 
 
 def check(r: recipes.Recipe) -> int:
@@ -276,8 +277,10 @@ def publish(r: recipes.Recipe) -> int:
         print(f"nothing built yet: python3 -m lfsbuilder build {r.path}", file=sys.stderr)
         return 1
     try:
-        count = binhost.publish(tools(), r, p[0].image, shared(r).binpkgs, BINHOST / "gnupg", BINHOST / "www")
-        print(f"published {count} packages, signed, in {(BINHOST / 'www' / r.binary_set).relative_to(ROOT)}; "
+        ours, gentoos = binhost.publish(tools(), r, p[0].image, shared(r).binpkgs, shared(r).binhost_cache,
+                                        BINHOST / "gnupg", BINHOST / "www")
+        print(f"published {ours} packages built here (signed with our key) and {gentoos} of Gentoo's (with Gentoo's "
+              f"signatures) in {(BINHOST / 'www' / r.binary_set).relative_to(ROOT)}; "
               f"systems of {r.path.name} fetch them from {r.binhost}{r.binary_set}/", flush=True)
         binhost.publish_repository(tools(), r, GENTOO / "keys" / "gnupg", BINHOST / "www")
         print(f"published the repository at {r.repository[:12]} as the branch {r.stem} of "
