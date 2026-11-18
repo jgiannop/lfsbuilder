@@ -6,7 +6,7 @@ A **recipe** (a TOML file, written by hand or by the form) says what the system 
 
 When a step fails, `build --repair` looks for a fix: dependency problems are solved by asking Portage itself (`check`), anything else by Claude (through Claude Code, with no tools: it only reads the failing command and the end of the logs, and answers with a USE flag, a keyword, a build setting or a patch, which lfsbuilder checks before using). Fixes are saved beside the recipe, so the next build doesn't need Claude.
 
-**Status:** early. Recipes build and boot in QEMU (a small systemd system, an OpenRC server with a static address, GNOME, KDE Plasma and Xfce desktops) and become live ISOs that boot on BIOS and UEFI and install themselves on a disk; the packages the builds compile can be published, signed, for installed systems to take as updates; the form and the repair agent have first versions. Next: the pinned repository served with the packages, branding. The first version, built on Linux From Scratch, is on the `lfs` branch.
+**Status:** early. Recipes build and boot in QEMU (a small systemd system, an OpenRC server with a static address, GNOME, KDE Plasma and Xfce desktops) and become live ISOs that boot on BIOS and UEFI and install themselves on a disk; the packages the builds compile and the repository they pin are published, signed, for installed systems to update from (`emerge --sync`, then `emerge -uDN @world`); the form and the repair agent have first versions. Next: branding. The first version, built on Linux From Scratch, is on the `lfs` branch.
 
 ```bash
 docker build -t lfsbuilder-host:dev -f docker/host.Dockerfile docker
@@ -18,7 +18,7 @@ python3 -m lfsbuilder boot --console recipes/example.toml   # ... and log in (us
 python3 -m lfsbuilder iso recipes/example.toml       # a live ISO (BIOS and UEFI), boot-tested in QEMU
 python3 -m lfsbuilder password                       # a password hash for a recipe's [users]
 python3 -m lfsbuilder signing-key                    # once: the key that signs your packages (back up work/binhost/gnupg)
-python3 -m lfsbuilder publish recipes/example.toml   # the compiled packages, signed, for the package server
+python3 -m lfsbuilder publish recipes/example.toml   # the compiled packages (signed) and the pinned repository, for the server
 python3 -m lfsbuilder serve                          # serve them (http://127.0.0.1:8080/; QEMU guests: 10.0.2.2)
 python3 -m lfsbuilder clean                          # old checkpoints no recipe uses (--yes removes them)
 ```

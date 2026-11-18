@@ -166,6 +166,10 @@ class Steps(unittest.TestCase):
         self.assertIn(steps.TRUST.read_text().rstrip(), script)
         self.assertIn(r.binhost_key_text().rstrip(), script)
         self.assertNotIn("LFSBUILDER_EOF", steps.TRUST.read_text())
+        # The repository: the recipe's branch from the same server, its head signed by Gentoo.
+        self.assertIn("sync-uri = http://10.0.2.2:8080/gentoo.git", script)
+        self.assertIn("--branch example --single-branch", script)
+        self.assertIn("sync-git-verify-commit-signature = yes", script)
 
     def test_fingerprints(self):
         r = recipe.load(RECIPES / "example.toml")

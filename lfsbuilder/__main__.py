@@ -277,11 +277,14 @@ def publish(r: recipes.Recipe) -> int:
         return 1
     try:
         count = binhost.publish(tools(), r, p[0].image, shared(r).binpkgs, BINHOST / "gnupg", BINHOST / "www")
-    except binhost.BinhostError as error:
+        print(f"published {count} packages, signed, in {(BINHOST / 'www' / r.binary_set).relative_to(ROOT)}; "
+              f"systems of {r.path.name} fetch them from {r.binhost}{r.binary_set}/", flush=True)
+        binhost.publish_repository(tools(), r, GENTOO / "keys" / "gnupg", BINHOST / "www")
+        print(f"published the repository at {r.repository[:12]} as the branch {r.stem} of "
+              f"{(BINHOST / 'www' / binhost.REPOSITORY).relative_to(ROOT)}; they sync {r.binhost}{binhost.REPOSITORY}")
+    except (binhost.BinhostError, subprocess.CalledProcessError) as error:
         print(error, file=sys.stderr)
         return 1
-    print(f"published {count} packages, signed, in {(BINHOST / 'www' / r.binary_set).relative_to(ROOT)}; "
-          f"systems of {r.path.name} fetch them from {r.binhost}{r.binary_set}/")
     return 0
 
 

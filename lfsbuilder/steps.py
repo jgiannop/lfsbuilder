@@ -232,7 +232,26 @@ def updates(r: Recipe) -> Step:
     script += "grep -q '^PORTAGE_TRUST_HELPER=' /etc/portage/make.conf || echo 'PORTAGE_TRUST_HELPER=\"/usr/sbin/lfsbuilder-trust\"' >> /etc/portage/make.conf\n"
     script += _file("/etc/portage/binrepos.conf/lfsbuilder.conf",
                     f"[lfsbuilder]\npriority = 2\nsync-uri = {r.binhost}{r.binary_set}/\nverify-signature = true\n")
+    # The repository: the commit the recipe pins, from the same server (publish puts it there), not
+    # Gentoo's latest, which would run ahead of the packages; its head must be signed by Gentoo.
+    script += "emerge --noreplace --verbose dev-vcs/git\n"
+    script += _file("/etc/portage/repos.conf/gentoo.conf", REPOS_CONF.format(server=r.binhost, branch=r.stem))
     return Step("updates", f"Updates from {r.binhost}", script)
+
+
+REPOS_CONF = """# Written by lfsbuilder: the repository comes from the distribution's server.
+[DEFAULT]
+main-repo = gentoo
+
+[gentoo]
+location = /var/db/repos/gentoo
+sync-type = git
+sync-uri = {server}gentoo.git
+sync-git-clone-extra-opts = --branch {branch} --single-branch
+sync-git-verify-commit-signature = yes
+sync-openpgp-key-path = /usr/share/openpgp-keys/gentoo-release.asc
+auto-sync = yes
+"""
 
 
 def services(r: Recipe) -> Step | None:

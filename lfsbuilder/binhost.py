@@ -9,12 +9,21 @@ so installed systems get them as updates instead of compiling.
                  index lists: a stopped build can leave half-written files),
                  each signed with the recipe's key, indexed (Packages), and
                  put in place at once: www/<set>/ is never half updated
-  serve()        a plain HTTP server of www/ (the packages are signed, so
-                 plain HTTP is enough for them; on a network, a real web
-                 server or a static host serves the same directory)
+  publish_repository()
+                 the recipe's pinned commit of the Gentoo repository in
+                 www/gentoo.git, on a branch named after the recipe: the
+                 tree the systems sync to, the one their packages were
+                 built against (Gentoo's latest would run ahead of them)
+  serve()        an HTTP server of www/: files as they are (the packages
+                 are signed, so plain HTTP is enough for them), and
+                 gentoo.git through git's own http-backend (shallow clones
+                 need git's smart protocol); on a network, a web server
+                 with git-http-backend serves the same directory
 
 Systems built with [updates] fetch <server><set>/Packages and the packages,
-and check every signature with lfsbuilder-trust's keyring (steps.updates).
+and check every signature with lfsbuilder-trust's keyring; they sync
+<server>gentoo.git and check that its head is signed by Gentoo's repository
+mirror key, as they would Gentoo's own (steps.updates).
 """
 
 from __future__ import annotations
@@ -26,7 +35,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import gentoo
 from .recipe import Recipe
+
+REPOSITORY = "gentoo.git"  # in www/; a branch per recipe
 
 KEY_TYPE = ("ed25519", "sign", "never")  # gpg --quick-gen-key: algorithm, usage, expiry
 
@@ -125,10 +137,80 @@ def publish(tools, r: Recipe, image: str, volume: str, home: Path, www: Path) ->
     return int(result.stdout.split()[-1])
 
 
+def publish_repository(tools, r: Recipe, keyring: Path, www: Path) -> None:
+    """Puts the recipe's pinned commit in www/gentoo.git as the branch
+    <recipe name>, after checking again that Gentoo's mirror key signed it.
+    The commit is fetched alone (depth 1); a system syncing the branch gets
+    that tree, and when the recipe pins a newer commit and is published
+    again, that one."""
+    git = www / REPOSITORY
+    inside = tools.inside(git)
+    if not (git / "HEAD").exists():
+        www.mkdir(parents=True, exist_ok=True)
+        tools.run("git", "init", "--quiet", "--bare", inside)
+    tools.run("git", "-C", inside, "fetch", "--quiet", "--depth", "1", gentoo.REPOSITORY_URL, r.repository)
+    result = subprocess.run(
+        ["docker", "run", "--rm", "-u", f"{os.getuid()}:{os.getgid()}", "-e", f"GNUPGHOME={tools.inside(keyring)}",
+         "-v", f"{tools.work}:/work", tools.image, "git", "-C", inside, "verify-commit", "--raw", r.repository],
+        text=True, capture_output=True)
+    if gentoo._signer(result.stderr) != gentoo.MIRROR_KEY:
+        raise BinhostError(f"commit {r.repository} isn't signed by Gentoo's repository mirror key:\n{result.stderr}")
+    tools.run("git", "-C", inside, "update-ref", f"refs/heads/{r.stem}", r.repository)
+    tools.run("git", "-C", inside, "symbolic-ref", "HEAD", f"refs/heads/{r.stem}")  # some branch HEAD must name
+    tools.run("git", "-C", inside, "gc", "--quiet", "--prune=now")  # what no branch needs any more
+
+
+GIT_HTTP_BACKEND = Path(subprocess.run(["git", "--exec-path"], text=True, capture_output=True).stdout.strip() or "/usr/lib/git-core") / "git-http-backend"
+
+
 class _Handler(http.server.SimpleHTTPRequestHandler):
     def list_directory(self, path):  # files only, no listings
         self.send_error(404)
         return None
+
+    def _is_git(self) -> bool:
+        return self.path.startswith(f"/{REPOSITORY}/")
+
+    def do_GET(self):
+        if self._is_git():
+            return self._git()
+        return super().do_GET()
+
+    def do_POST(self):
+        if self._is_git():
+            return self._git()
+        self.send_error(405)
+
+    def _git(self) -> None:
+        """git's smart HTTP protocol: git http-backend as a CGI program
+        (read only: it refuses pushes unless told otherwise)."""
+        path, _, query = self.path.partition("?")
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        env = {
+            "GIT_PROJECT_ROOT": self.directory, "GIT_HTTP_EXPORT_ALL": "1", "PATH_INFO": path,
+            "QUERY_STRING": query, "REQUEST_METHOD": self.command, "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+            "CONTENT_LENGTH": str(len(body)), "REMOTE_ADDR": self.client_address[0], "GIT_PROTOCOL": self.headers.get("Git-Protocol", ""),
+            "HTTP_CONTENT_ENCODING": self.headers.get("Content-Encoding", ""),
+        }
+        result = subprocess.run([str(GIT_HTTP_BACKEND)], input=body, env=env, capture_output=True)
+        head, _, payload = result.stdout.partition(b"\r\n\r\n")
+        if not _:
+            self.send_error(500, "git http-backend gave no answer")
+            return
+        status, headers = 200, []
+        for line in head.decode("latin-1").split("\r\n"):
+            name, _, value = line.partition(":")
+            if name.lower() == "status":
+                status = int(value.split()[0])
+            else:
+                headers.append((name, value.strip()))
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
 
 def serve(www: Path, bind: str, port: int) -> None:

@@ -235,6 +235,8 @@ def load(path: Path) -> Recipe:
     if bool(recipe.binhost) != bool(recipe.binhost_key):
         problems.append("updates: server and key go together (python3 -m lfsbuilder signing-key makes the key)")
     elif recipe.binhost:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", path.stem):
+            problems.append(f"with [updates], the recipe's file name ({path.stem!r}) names its branch of the repository: letters, digits, . _ -")
         if not _URL.match(recipe.binhost):
             problems.append(f"updates.server {recipe.binhost!r} must be an http(s) URL ending in /, like \"http://10.0.2.2:8080/\"")
         if not _KEY_PATH.match(recipe.binhost_key) or ".." in recipe.binhost_key.split("/"):
