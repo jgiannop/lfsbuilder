@@ -12,15 +12,22 @@ in Gentoo's own ways:
                                 system's profile, so a change reaches it
                                 with the next sync
   argo-base/argo-release        os-release, the logo, the wallpapers, the
-                                login screens (what was the branding step)
-  argo-base/argo-meta           depends on the recipe's packages: the one
+                                login screens (what was the branding step):
+                                one package for every recipe, the desktop
+                                chosen by its USE flags (gdm, sddm,
+                                lightdm, plasma, xfce), which the profile
+                                sets; recipes share one set of binary
+                                packages, and Portage tells their builds
+                                apart by USE
+  argo-base/argo-<recipe>       depends on the recipe's packages: the one
                                 package in the system's world file, so a
                                 package added to the recipe comes with
                                 `emerge -uDN @world` and one taken out goes
-                                with `emerge --depclean`
+                                with `emerge --depclean`; named after the
+                                recipe, since its contents differ
 
-Both packages carry the recipe's version: a release that changes them must
-raise it, or installed systems won't see the change.
+Both carry the recipe's version: a release that changes them must raise it,
+or installed systems won't see the change.
 
 During builds it is mounted read-only at /var/db/repos/argo (like Gentoo's
 tree); systems sync it from <server>argo.git, a branch per recipe, its
@@ -60,6 +67,23 @@ def profile_name(r: Recipe) -> str:
     return f"{REPO}:argo/{r.stem}"
 
 
+def meta_name(r: Recipe) -> str:
+    return f"{CATEGORY}/argo-{r.stem}"
+
+
+DESKTOP_FLAGS = ("gdm", "sddm", "lightdm", "plasma", "xfce")
+
+
+def release_flags(r: Recipe) -> list[str]:
+    """argo-release's USE flags for the recipe: its login screen and desktop."""
+    flags = [s for s in ("gdm", "sddm", "lightdm") if s in r.services]
+    if "kde-plasma/plasma-meta" in r.packages:
+        flags.append("plasma")
+    if "xfce-base/xfce4-meta" in r.packages:
+        flags.append("xfce")
+    return flags
+
+
 def packages(r: Recipe) -> list[str]:
     """The recipe's packages as the build installs them (steps.all_steps): its
     own, NetworkManager when chosen, sudo for the wheel group."""
@@ -77,6 +101,9 @@ def _package_use(r: Recipe) -> str:
              "sys-kernel/installkernel dracut"]
     # Sorted: the order they were written in (by hand or by the form) mustn't change the build.
     lines += [f"{atom} {' '.join(flags)}" for atom, flags in sorted(r.package_use.items())]
+    flags = release_flags(r)
+    if flags:  # (off by default)
+        lines.append(f"{CATEGORY}/argo-release {' '.join(flags)}")
     return "\n".join(lines) + "\n"
 
 
@@ -151,79 +178,32 @@ post_src_install() { argo_wallpaper; }
 
 
 def _release(r: Recipe) -> dict[str, bytes]:
-    """argo-release: its ebuild and files. What each login screen gets is
-    chosen from the recipe (services, packages), as the branding step did."""
+    """argo-release: its ebuild and files, the same for every recipe of the
+    distribution (only the name and version come from it); each desktop's
+    part under its USE flag."""
     d = f"{CATEGORY}/argo-release"
     files: dict[str, bytes] = {f"{d}/files/{name}": (BRANDING / name).read_bytes() for name in PICTURES}
     files[f"{d}/files/os-release"] = _os_release(r).encode()
     files[f"{d}/files/issue"] = f"\n{r.name} {r.version} (\\s \\m \\r) \\t\n\n".encode()  # agetty's \s etc.
-    install = [
-        f"\tinsinto {ARGO}",
-        *(f'\tdoins "${{FILESDIR}}"/{name}' for name in PICTURES),
-        "\tlocal s",
-        "\tfor s in 64 128 256 512; do",
-        "\t\tinsinto /usr/share/icons/hicolor/${s}x${s}/apps",
-        '\t\tnewins "${FILESDIR}"/argo-${s}.png argo-linux.png',
-        "\tdone",
-        '\tinsinto /usr/share/pixmaps\n\tnewins "${FILESDIR}"/argo-256.png argo-linux.png',
-        '\tinsinto /usr/lib/argo\n\tdoins "${FILESDIR}"/os-release "${FILESDIR}"/issue',
-    ]
-    postinst = [
-        "\t# A file in place of baselayout's link to /usr/lib/os-release: /etc is protected, so",
-        "\t# baselayout's updates leave it (a ._cfg file at most), and this package's update rewrites it.",
-        '\trm -f "${EROOT}"/etc/os-release',
-        '\tcp "${EROOT}"/usr/lib/argo/os-release "${EROOT}"/etc/os-release',
-        '\tcp "${EROOT}"/usr/lib/argo/issue "${EROOT}"/etc/issue',
-    ]
     background = f"{ARGO}/argo-background-1920x1080.png"
-    if "gdm" in r.services:
-        files[f"{d}/files/gdm.profile"] = GDM_PROFILE.encode()
-        files[f"{d}/files/user.profile"] = USER_PROFILE.encode()
-        files[f"{d}/files/gdm-01-argo"] = f"[org/gnome/login-screen]\nlogo='{ARGO}/argo-wordmark-light-440.png'\n".encode()
-        files[f"{d}/files/local-01-argo"] = (
-            f"[org/gnome/desktop/background]\npicture-uri='file://{background}'\npicture-uri-dark='file://{background}'\n"
-            f"[org/gnome/desktop/screensaver]\npicture-uri='file://{background}'\n").encode()
-        install += ['\tinsinto /etc/dconf/profile\n\tnewins "${FILESDIR}"/gdm.profile gdm\n\tnewins "${FILESDIR}"/user.profile user',
-                    '\tinsinto /etc/dconf/db/gdm.d\n\tnewins "${FILESDIR}"/gdm-01-argo 01-argo',
-                    '\tinsinto /etc/dconf/db/local.d\n\tnewins "${FILESDIR}"/local-01-argo 01-argo']
-        postinst += ['\tdconf update || ewarn "dconf update failed"']
-    if "sddm" in r.services:
-        # Breeze puts its clock where the background's logo is: the plain sea, and Breeze's own logo (at the bottom).
-        files[f"{d}/files/sddm-50-argo.conf"] = b"[Theme]\nCurrent=breeze\n"
-        files[f"{d}/files/breeze-theme.conf.user"] = (
-            f"[General]\ntype=image\nbackground={ARGO}/argo-background-plain-1920x1080.png\n"
-            f"showlogo=shown\nlogo={ARGO}/argo-wordmark-light-440.png\n").encode()
-        install += ['\tinsinto /etc/sddm.conf.d\n\tnewins "${FILESDIR}"/sddm-50-argo.conf 50-argo.conf',
-                    '\tinsinto /usr/share/sddm/themes/breeze\n\tnewins "${FILESDIR}"/breeze-theme.conf.user theme.conf.user']
-    if "lightdm" in r.services:
-        # The greeter reads /etc/lightdm/lightdm-gtk-greeter.conf last, and Gentoo's sets background= (its own picture).
-        postinst += [f"\tsed -i 's|^#\\?background=.*|background={background}|' \"${{EROOT}}\"/etc/lightdm/lightdm-gtk-greeter.conf"]
-    if "kde-plasma/plasma-meta" in r.packages:
-        # Plasma's default wallpaper is the look-and-feel package's [Wallpaper] Image: a package of our
-        # own (Breeze's defaults with our wallpaper; the rest falls back to Breeze), chosen system-wide.
-        files[f"{d}/files/wallpaper-metadata.json"] = (json.dumps(PLASMA_WALLPAPER, indent=4) + "\n").encode()
-        files[f"{d}/files/lnf-metadata.json"] = (json.dumps(PLASMA_LNF_METADATA, indent=4) + "\n").encode()
-        files[f"{d}/files/lnf-defaults"] = PLASMA_LNF_DEFAULTS.encode()
-        lnf = f"/usr/share/plasma/look-and-feel/{PLASMA_LNF}"
-        install += ['\tinsinto /usr/share/wallpapers/Argo\n\tnewins "${FILESDIR}"/wallpaper-metadata.json metadata.json',
-                    '\tinsinto /usr/share/wallpapers/Argo/contents/images\n\tnewins "${FILESDIR}"/argo-background-1920x1080.png 1920x1080.png',
-                    f'\tinsinto {lnf}\n\tnewins "${{FILESDIR}}"/lnf-metadata.json metadata.json',
-                    f'\tinsinto {lnf}/contents\n\tnewins "${{FILESDIR}}"/lnf-defaults defaults']
-        postinst += ['\tlocal kdeglobals="${EROOT}"/etc/xdg/kdeglobals',
-                     '\ttouch "${kdeglobals}"',
-                     '\tif grep -q "^LookAndFeelPackage=" "${kdeglobals}"; then',
-                     f'\t\tsed -i "s/^LookAndFeelPackage=.*/LookAndFeelPackage={PLASMA_LNF}/" "${{kdeglobals}}"',
-                     "\telse",
-                     f"\t\tprintf '\\n[KDE]\\nLookAndFeelPackage={PLASMA_LNF}\\n' >> \"${{kdeglobals}}\"",
-                     "\tfi"]
-    if "xfce-base/xfce4-meta" in r.packages:
-        # xfdesktop's default wallpaper is a file of its own, built into it: ours in its place, now and
-        # (a Portage hook, run as the package is installed) at every update of xfdesktop.
-        files[f"{d}/files/xfdesktop.env"] = XFDESKTOP_HOOK.encode()
-        install += ['\tinsinto /etc/portage/env/xfce-base\n\tnewins "${FILESDIR}"/xfdesktop.env xfdesktop']
-        postinst += ['\t( ED="${EROOT}/"; source "${EROOT}"/etc/portage/env/xfce-base/xfdesktop; argo_wallpaper )']
-    postinst += ["\txdg_icon_cache_update"]
-    ebuild = f"""# Written by lfsbuilder from the recipe {r.path.name}.
+    files[f"{d}/files/gdm.profile"] = GDM_PROFILE.encode()
+    files[f"{d}/files/user.profile"] = USER_PROFILE.encode()
+    files[f"{d}/files/gdm-01-argo"] = f"[org/gnome/login-screen]\nlogo='{ARGO}/argo-wordmark-light-440.png'\n".encode()
+    files[f"{d}/files/local-01-argo"] = (
+        f"[org/gnome/desktop/background]\npicture-uri='file://{background}'\npicture-uri-dark='file://{background}'\n"
+        f"[org/gnome/desktop/screensaver]\npicture-uri='file://{background}'\n").encode()
+    # Breeze puts its clock where the background's logo is: the plain sea, and Breeze's own logo (at the bottom).
+    files[f"{d}/files/sddm-50-argo.conf"] = b"[Theme]\nCurrent=breeze\n"
+    files[f"{d}/files/breeze-theme.conf.user"] = (
+        f"[General]\ntype=image\nbackground={ARGO}/argo-background-plain-1920x1080.png\n"
+        f"showlogo=shown\nlogo={ARGO}/argo-wordmark-light-440.png\n").encode()
+    files[f"{d}/files/wallpaper-metadata.json"] = (json.dumps(PLASMA_WALLPAPER, indent=4) + "\n").encode()
+    files[f"{d}/files/lnf-metadata.json"] = (json.dumps(PLASMA_LNF_METADATA, indent=4) + "\n").encode()
+    files[f"{d}/files/lnf-defaults"] = PLASMA_LNF_DEFAULTS.encode()
+    files[f"{d}/files/xfdesktop.env"] = XFDESKTOP_HOOK.encode()
+    lnf = f"/usr/share/plasma/look-and-feel/{PLASMA_LNF}"
+    pictures = "\n".join(f'\tdoins "${{FILESDIR}}"/{name}' for name in PICTURES)
+    ebuild = f"""# Written by lfsbuilder: the release package of {r.name}.
 EAPI=8
 
 inherit xdg-utils
@@ -235,13 +215,81 @@ S="${{WORKDIR}}"
 LICENSE="CC-BY-SA-4.0"
 SLOT="0"
 KEYWORDS="amd64"
+IUSE="{' '.join(DESKTOP_FLAGS)}"
 
 src_install() {{
-{chr(10).join(install)}
+\tinsinto {ARGO}
+{pictures}
+\tlocal s
+\tfor s in 64 128 256 512; do
+\t\tinsinto /usr/share/icons/hicolor/${{s}}x${{s}}/apps
+\t\tnewins "${{FILESDIR}}"/argo-${{s}}.png argo-linux.png
+\tdone
+\tinsinto /usr/share/pixmaps
+\tnewins "${{FILESDIR}}"/argo-256.png argo-linux.png
+\tinsinto /usr/lib/argo
+\tdoins "${{FILESDIR}}"/os-release "${{FILESDIR}}"/issue
+\tif use gdm; then
+\t\tinsinto /etc/dconf/profile
+\t\tnewins "${{FILESDIR}}"/gdm.profile gdm
+\t\tnewins "${{FILESDIR}}"/user.profile user
+\t\tinsinto /etc/dconf/db/gdm.d
+\t\tnewins "${{FILESDIR}}"/gdm-01-argo 01-argo
+\t\tinsinto /etc/dconf/db/local.d
+\t\tnewins "${{FILESDIR}}"/local-01-argo 01-argo
+\tfi
+\tif use sddm; then
+\t\tinsinto /etc/sddm.conf.d
+\t\tnewins "${{FILESDIR}}"/sddm-50-argo.conf 50-argo.conf
+\t\tinsinto /usr/share/sddm/themes/breeze
+\t\tnewins "${{FILESDIR}}"/breeze-theme.conf.user theme.conf.user
+\tfi
+\tif use plasma; then
+\t\t# Plasma's default wallpaper is the look-and-feel package's [Wallpaper] Image: a package of our
+\t\t# own (Breeze's defaults with our wallpaper; the rest falls back to Breeze), chosen system-wide.
+\t\tinsinto /usr/share/wallpapers/Argo
+\t\tnewins "${{FILESDIR}}"/wallpaper-metadata.json metadata.json
+\t\tinsinto /usr/share/wallpapers/Argo/contents/images
+\t\tnewins "${{FILESDIR}}"/argo-background-1920x1080.png 1920x1080.png
+\t\tinsinto {lnf}
+\t\tnewins "${{FILESDIR}}"/lnf-metadata.json metadata.json
+\t\tinsinto {lnf}/contents
+\t\tnewins "${{FILESDIR}}"/lnf-defaults defaults
+\tfi
+\tif use xfce; then
+\t\t# xfdesktop's default wallpaper is a file of its own, built into it: ours in its place, now and
+\t\t# (a Portage hook, run as the package is installed) at every update of xfdesktop.
+\t\tinsinto /etc/portage/env/xfce-base
+\t\tnewins "${{FILESDIR}}"/xfdesktop.env xfdesktop
+\tfi
 }}
 
 pkg_postinst() {{
-{chr(10).join(postinst)}
+\t# A file in place of baselayout's link to /usr/lib/os-release: /etc is protected, so
+\t# baselayout's updates leave it (a ._cfg file at most), and this package's update rewrites it.
+\trm -f "${{EROOT}}"/etc/os-release
+\tcp "${{EROOT}}"/usr/lib/argo/os-release "${{EROOT}}"/etc/os-release
+\tcp "${{EROOT}}"/usr/lib/argo/issue "${{EROOT}}"/etc/issue
+\tif use gdm; then
+\t\tdconf update || ewarn "dconf update failed"
+\tfi
+\tif use lightdm; then
+\t\t# The greeter reads its main file last, and Gentoo's sets background= (its own picture).
+\t\tsed -i 's|^#\\?background=.*|background={background}|' "${{EROOT}}"/etc/lightdm/lightdm-gtk-greeter.conf
+\tfi
+\tif use plasma; then
+\t\tlocal kdeglobals="${{EROOT}}"/etc/xdg/kdeglobals
+\t\ttouch "${{kdeglobals}}"
+\t\tif grep -q "^LookAndFeelPackage=" "${{kdeglobals}}"; then
+\t\t\tsed -i "s/^LookAndFeelPackage=.*/LookAndFeelPackage={PLASMA_LNF}/" "${{kdeglobals}}"
+\t\telse
+\t\t\tprintf '\\n[KDE]\\nLookAndFeelPackage={PLASMA_LNF}\\n' >> "${{kdeglobals}}"
+\t\tfi
+\tfi
+\tif use xfce; then
+\t\t( ED="${{EROOT}}/"; source "${{EROOT}}"/etc/portage/env/xfce-base/xfdesktop; argo_wallpaper )
+\tfi
+\txdg_icon_cache_update
 }}
 
 pkg_postrm() {{
@@ -269,11 +317,17 @@ RDEPEND="
 {depends}
 "
 """
-    return {f"{CATEGORY}/argo-meta/argo-meta-{r.version}.ebuild": ebuild.encode()}
+    name = meta_name(r).split("/")[1]
+    return {f"{CATEGORY}/{name}/{name}-{r.version}.ebuild": ebuild.encode()}
+
+
+PN = re.compile(r"^[a-z0-9][a-z0-9_]*$")  # the recipe's name, in argo-<recipe>: no "-" (Portage would read a version)
 
 
 def files(r: Recipe) -> dict[str, bytes]:
     """The whole repository for the recipe: path -> content."""
+    if not PN.match(r.stem):
+        raise OverlayError(f"the recipe's file name {r.stem!r} names its package argo-{r.stem}: lower-case letters, digits and _")
     if not VERSION.match(r.version):
         raise OverlayError(f"distribution.version {r.version!r} is the version of Argo's packages too: "
                            "numbers with dots, like 0.1 or 1.2.3")

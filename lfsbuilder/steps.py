@@ -223,8 +223,11 @@ def argo(r: Recipe) -> Step:
     and updated like the rest."""
     script = "set -e\n"
     script += f"# the argo packages: {overlay.packages_digest(r)}\n"
-    script += f"emerge --verbose {overlay.CATEGORY}/argo-meta\n"
-    return Step("argo", f"{r.name} {r.version}: argo-release, argo-meta", script)
+    # Built from the ebuilds every time (cheap): a binary of an earlier build with the same version
+    # and USE flags may hold older pictures or files, and the newest build is what gets published.
+    script += f"emerge --verbose --usepkg=n --getbinpkg=n {overlay.CATEGORY}/argo-release {overlay.meta_name(r)}\n"
+    script += f"emerge --verbose --noreplace {overlay.meta_name(r)}\n"  # (the world file: only it)
+    return Step("argo", f"{r.name} {r.version}: argo-release, {overlay.meta_name(r)}", script)
 
 
 TRUST = Path(__file__).with_name("trust.sh")

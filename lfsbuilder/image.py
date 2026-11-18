@@ -56,9 +56,19 @@ def system_files(r: Recipe, live: bool = False) -> dict[str, tuple[str, str]]:
     return files
 
 
-def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False) -> tuple[Path, Path]:
+def _as_root(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    info.uid = info.gid = 0
+    info.uname = info.gname = "root"
+    return info
+
+
+def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False,
+           repos: dict[str, Path] | None = None) -> tuple[Path, Path]:
     """The system of `image` as `rootfs` (a tar), its kernel and initramfs
-    copied to `boot`. Returns their paths."""
+    copied to `boot`. `repos`: trees put in the system in place of the
+    image's (empty) ones, {path in the system: local directory} (clones.py).
+    Returns the kernel's and initramfs's paths."""
+    repos = repos or {}
     boot.mkdir(parents=True, exist_ok=True)
     kernel = initramfs = None
     replaced = system_files(r, live)
@@ -71,7 +81,7 @@ def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False) 
                 name = member.name.removeprefix("./")
                 # Docker's files and those written from the recipe below (one copy only: tools that read
                 # the tar keep the first of two, which would be the image's own os-release, say).
-                if name in DOCKER_FILES or name in replaced or any(name == d or name.startswith(d + "/") for d in LEFT_OUT):
+                if name in DOCKER_FILES or name in replaced or any(name == d or name.startswith(d + "/") for d in (*LEFT_OUT, *repos)):
                     continue
                 data = tin.extractfile(member) if member.isreg() else None
                 if member.isreg() and (KERNEL.match(name) or INITRAMFS.match(name)):
@@ -83,6 +93,8 @@ def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False) 
                         initramfs = boot / Path(name).name
                     data = io.BytesIO(content)
                 tout.addfile(member, data)
+            for name, tree in repos.items():
+                tout.add(str(tree), arcname=name, recursive=True, filter=_as_root)
             for name, (kind, content) in replaced.items():
                 info = tarfile.TarInfo(name)
                 info.mtime = int(time.time())

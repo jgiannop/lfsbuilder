@@ -23,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import binhost, check as checks, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
+from . import binhost, check as checks, clones, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
@@ -188,6 +188,18 @@ def clean(yes: bool) -> int:
     return 0
 
 
+def repository_clones(r: recipes.Recipe, out: Path) -> dict[str, Path] | None:
+    """The checked clones of the published repositories for the system (clones.py); None: refused."""
+    try:
+        repos = clones.clones(tools(), r, shared(r).overlay, GENTOO / "keys" / "gnupg", BINHOST / "www", out / "repos")
+    except clones.CloneError as error:
+        print(error, file=sys.stderr)
+        return None
+    if repos:
+        print("the system gets the published gentoo and argo repositories (checked), so its first sync is a fetch", flush=True)
+    return repos
+
+
 def iso(r: recipes.Recipe) -> int:
     p = planned(r)
     if p is None:
@@ -197,8 +209,11 @@ def iso(r: recipes.Recipe) -> int:
         print(f"the build isn't finished ({', '.join(missing)} still to do): python3 -m lfsbuilder build {r.path}", file=sys.stderr)
         return 1
     out = WORK / f"build-{r.stem}"
+    repos = repository_clones(r, out)
+    if repos is None:
+        return 1
     print(f"exporting {p[-1].image} as a live system", flush=True)
-    kernel, _ = image.export(p[-1].image, r, out / "rootfs.tar", out / "boot", live=True)
+    kernel, _ = image.export(p[-1].image, r, out / "rootfs.tar", out / "boot", live=True, repos=repos)
     version = kernel.name.split("-", 1)[1]
     print("making the live initramfs (dracut, dmsquash-live)", flush=True)
     image.live_initramfs(p[-1].image, shared(r).args(), version, out / "boot" / "initramfs-live.img")
@@ -306,8 +321,11 @@ def boot(r: recipes.Recipe, console: bool = False) -> int:
         print(f"the build isn't finished ({', '.join(missing)} still to do): python3 -m lfsbuilder build {r.path}", file=sys.stderr)
         return 1
     out = WORK / f"build-{r.stem}"
+    repos = repository_clones(r, out)
+    if repos is None:
+        return 1
     print(f"exporting {p[-1].image}", flush=True)
-    kernel, initramfs = image.export(p[-1].image, r, out / "rootfs.tar", out / "boot")
+    kernel, initramfs = image.export(p[-1].image, r, out / "rootfs.tar", out / "boot", repos=repos)
     print(f"making {(out / 'disk.img').relative_to(ROOT)} ({r.output.get('size_gb', 12)} GB, sparse)", flush=True)
     image.disk(tools(), out / "rootfs.tar", out / "disk.img", int(r.output.get("size_gb", 12)))
     (out / "rootfs.tar").unlink()  # the disk image holds the same, and it is gigabytes

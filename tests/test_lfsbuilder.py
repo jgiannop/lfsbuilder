@@ -224,7 +224,7 @@ class Overlay(unittest.TestCase):
         self.assertEqual(files["profiles/argo/gnome/parent"], f"gentoo:{r.profile}\n".encode())
         self.assertIn(b"net-libs/ngtcp2 gnutls", files["profiles/argo/gnome/package.use"])
         self.assertIn(b"sys-kernel/installkernel dracut", files["profiles/argo/gnome/package.use"])
-        meta = files["argo-base/argo-meta/argo-meta-0.1.ebuild"].decode()
+        meta = files["argo-base/argo-gnome/argo-gnome-0.1.ebuild"].decode()
         for atom in ["argo-base/argo-release", *r.packages, "net-misc/networkmanager", "app-admin/sudo"]:
             self.assertIn(f"\t{atom}\n", meta)
         self.assertNotIn("USE=", steps.make_conf(r))  # the profile's now
@@ -245,23 +245,31 @@ class Overlay(unittest.TestCase):
         with self.assertRaises(overlay.OverlayError):
             overlay.files(dataclasses.replace(r, version="0.1-beta"))
 
-    def test_each_desktop_gets_its_own_login_screen(self):
-        marks = {"gdm": "dconf update", "sddm": "sddm.conf.d", "lightdm": "lightdm-gtk-greeter.conf"}
-        for name, dm in (("example", None), ("gnome", "gdm"), ("plasma", "sddm"), ("xfce", "lightdm")):
+    def test_each_desktop_is_a_use_flag_of_one_release_package(self):
+        # Recipes share one set of binary packages: Portage tells their argo-release builds apart by USE.
+        expected = {"example": [], "gnome": ["gdm"], "plasma": ["sddm", "plasma"], "xfce": ["lightdm", "xfce"], "openrc": []}
+        releases = set()
+        for name, flags in expected.items():
             with self.subTest(name):
-                ebuild = self.release(name)
-                self.assertIn("/usr/share/icons/hicolor/${s}x${s}/apps", ebuild)
-                for other, mark in marks.items():
-                    self.assertEqual(mark in ebuild, other == dm)
+                r = recipe.load(RECIPES / f"{name}.toml")
+                self.assertEqual(overlay.release_flags(r), flags)
+                use = overlay.files(r)[f"profiles/argo/{name}/package.use"].decode()
+                self.assertEqual(f"argo-base/argo-release {' '.join(flags)}" in use, bool(flags))
+                releases.add(self.release(name))
+        self.assertEqual(len(releases), 1)  # the same ebuild for every recipe
+        ebuild = releases.pop()
+        for flag in overlay.DESKTOP_FLAGS:
+            self.assertIn(f"use {flag}", ebuild)
+        self.assertIn("LookAndFeelPackage=org.argolinux.desktop", ebuild)
+        self.assertIn("/etc/portage/env/xfce-base", ebuild)
 
-    def test_each_desktop_gets_the_wallpaper_its_own_way(self):
-        plasma, xfce = self.release("plasma"), self.release("xfce")
-        self.assertIn("LookAndFeelPackage=org.argolinux.desktop", plasma)
-        self.assertIn(b"Image=Argo", overlay.files(recipe.load(RECIPES / "plasma.toml"))["argo-base/argo-release/files/lnf-defaults"])
-        self.assertNotIn("xfdesktop", plasma)
-        self.assertIn("/etc/portage/env/xfce-base", xfce)
-        self.assertIn(b"post_src_install", overlay.files(recipe.load(RECIPES / "xfce.toml"))["argo-base/argo-release/files/xfdesktop.env"])
-        self.assertNotIn("LookAndFeelPackage", xfce)
+    def test_the_meta_package_is_named_after_the_recipe(self):
+        r = recipe.load(RECIPES / "plasma.toml")
+        self.assertEqual(overlay.meta_name(r), "argo-base/argo-plasma")
+        self.assertIn("argo-base/argo-plasma", steps.argo(r).script)
+        self.assertIn("--usepkg=n", steps.argo(r).script)  # never an older build of the same version
+        with self.assertRaises(overlay.OverlayError):
+            overlay.files(dataclasses.replace(r, path=r.path.with_name("my-desktop.toml")))
 
     def test_systems_sync_it_from_the_server_signed(self):
         script = steps.updates(recipe.load(RECIPES / "example.toml")).script
