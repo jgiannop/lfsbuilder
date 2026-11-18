@@ -73,8 +73,8 @@ class Estimate:
             guessed = any(how == "guess" for _, _, how in self.steps)
             parts.append(f"about {duration(self.seconds)}{' (partly guessed from other recipes)' if guessed else ''}")
         if self.unknown:
-            parts.append(f"{'plus ' if self.seconds else ''}{len(self.unknown)} never built before, "
-                         f"no estimate: {', '.join(self.unknown)}")
+            parts.append(f"{'plus ' if self.seconds else ''}{len(self.unknown)} with no time recorded, "
+                         f"so no estimate: {', '.join(self.unknown)}")
         return ", ".join(parts) + "."
 
 

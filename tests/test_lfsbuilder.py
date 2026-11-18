@@ -202,7 +202,7 @@ class Estimates(unittest.TestCase):
         self.assertEqual(e.seconds, 120 + 300)
         self.assertEqual(e.unknown, [s.step.name for s in p[3:]])
         self.assertIn("partly guessed", e.text())
-        self.assertIn(f"{len(p) - 3} never built before", e.text())
+        self.assertIn(f"{len(p) - 3} with no time recorded", e.text())
         self.assertEqual(estimate.estimate(p, data, built={s.image for s in p}).text(), "Everything is built.")
 
     def test_names_keep_the_last_few(self):
@@ -216,6 +216,27 @@ class Estimates(unittest.TestCase):
         self.assertEqual(estimate.duration(20), "under a minute")
         self.assertEqual(estimate.duration(38 * 60), "38 min")
         self.assertEqual(estimate.duration(65 * 60 + 10), "1 h 05 min")
+
+
+class MachineId(unittest.TestCase):
+    def test_first_boot_mark(self):
+        # An installed system starts with its root read-only: without the file it has no machine id at all.
+        r = recipe.load(RECIPES / "gnome.toml")
+        self.assertEqual(image.system_files(r)["etc/machine-id"], ("file", "uninitialized\n"))
+        self.assertEqual(image.system_files(r, live=True)["etc/machine-id"], ("file", "uninitialized\n"))
+        self.assertNotIn("etc/machine-id", image.system_files(recipe.load(RECIPES / "openrc.toml")))
+        installer = (ROOT / "lfsbuilder" / "installer.sh").read_text()
+        self.assertNotIn('rm -f "$target/etc/machine-id"', installer)
+        self.assertIn("printf 'uninitialized\\n' > \"$target/etc/machine-id\"", installer)
+
+
+class Screens(unittest.TestCase):
+    def test_text_console_or_login_screen(self):
+        width, height = 64, 48
+        def png(rgb):
+            return image.ppm_to_png(b"P6\n%d %d\n255\n" % (width, height) + bytes(rgb) * (width * height))
+        self.assertGreater(image.black_share(png((0, 0, 0))), image.TEXT_CONSOLE)    # a console's black
+        self.assertEqual(image.black_share(png((34, 34, 38))), 0.0)                 # GDM's grey
 
 
 class Logs(unittest.TestCase):

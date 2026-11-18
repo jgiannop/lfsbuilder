@@ -51,6 +51,11 @@ def system_files(r: Recipe, live: bool = False) -> dict[str, tuple[str, str]]:
     # os-release and /etc/issue (who the system is) come from argo-base/argo-release (overlay.py).
     if r.init == "systemd":
         files["etc/resolv.conf"] = ("link", "../run/systemd/resolve/stub-resolv.conf")
+        # The system makes its machine id at first boot (the build removes the image's). The file must be
+        # there, with systemd's first-boot mark: a system started with its root read-only (an installed
+        # one, by GRUB's `ro`) gets a transient id mounted over it until / is writable, and without the
+        # file has no machine id at all (accounts-daemon aborts, and GDM with it).
+        files["etc/machine-id"] = ("file", "uninitialized\n")
     else:
         files["etc/resolv.conf"] = ("file", "".join(f"nameserver {d}\n" for d in r.network.get("dns", [])))
     return files
@@ -346,6 +351,31 @@ def _screendump(monitor: Path, png: Path) -> None:
         time.sleep(1)  # let QEMU finish writing it
     png.write_bytes(ppm_to_png(ppm.read_bytes()))
     ppm.unlink()
+
+
+def black_share(png: bytes) -> float:
+    """How much of a screenshot (a PNG as ppm_to_png writes it: RGB, no row filters) is pure black,
+    sampled on a grid. A text console is nearly all black; a display manager's screen hardly any."""
+    pos, idat, width, height = 8, b"", 0, 0
+    while pos < len(png):
+        (length,) = struct.unpack(">I", png[pos:pos + 4])
+        kind, body = png[pos + 4:pos + 8], png[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height = struct.unpack(">II", body[:8])
+        elif kind == b"IDAT":
+            idat += body
+    raw, stride = zlib.decompress(idat), width * 3 + 1
+    black = total = 0
+    for y in range(0, height, 4):
+        row = raw[y * stride + 1:(y + 1) * stride]
+        for x in range(0, width * 3, 12):
+            total += 1
+            black += row[x] < 8 and row[x + 1] < 8 and row[x + 2] < 8
+    return black / total if total else 1.0
+
+
+TEXT_CONSOLE = 0.9  # black share above which the screen is a text console (consoles 0.97+, login screens 0.0)
 
 
 def ppm_to_png(data: bytes) -> bytes:

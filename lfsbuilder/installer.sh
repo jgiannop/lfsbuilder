@@ -84,7 +84,10 @@ cat > "$target/etc/fstab" <<EOF
 UUID=$(blkid -s UUID -o value "$root")  /          ext4  defaults    0 1
 UUID=$(blkid -s UUID -o value "$esp")  /boot/efi  vfat  umask=0077  0 2
 EOF
-rm -f "$target/etc/machine-id"  # the installed system makes its own at first boot
+# The installed system makes its own machine id at first boot. "uninitialized" (systemd's first-boot
+# mark), not no file: the root is mounted read-only first, and systemd then mounts a transient id over
+# this file and writes it once / is writable; with no file, accounts-daemon (and with it GDM) fails.
+if [ -e "$target/etc/machine-id" ]; then printf 'uninitialized\n' > "$target/etc/machine-id"; fi
 
 say "Installing GRUB (BIOS and UEFI)"
 # Slaves: unmounting them from the target never reaches the running system's own mounts.

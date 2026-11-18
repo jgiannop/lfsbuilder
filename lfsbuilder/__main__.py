@@ -80,14 +80,27 @@ def build_estimate(r: recipes.Recipe, p: list[runner.Planned]) -> estimate.Estim
     return estimate.estimate(p, estimate.load(TIMES), estimate.built_images())
 
 
+DISPLAY_MANAGERS = ("gdm", "sddm", "lightdm")
+
+
+def screen_problem(r: recipes.Recipe, screenshot: Path) -> str | None:
+    """With a display manager, the boot test's screen must be its login, not a text console (the
+    serial login comes either way: GDM failing over and over, say, behind it)."""
+    manager = next((s for s in r.services if s in DISPLAY_MANAGERS), None)
+    if manager and image.black_share(screenshot.read_bytes()) > image.TEXT_CONSOLE:
+        return (f"but the screen is a text console, not {manager}'s login ({screenshot.relative_to(ROOT)}); "
+                f"`journalctl -b -u {manager}` in the system says why")
+    return None
+
+
 def plan(r: recipes.Recipe) -> int:
     p = planned(r)
     if p is None:
         return 1
     e = build_estimate(r, p)
     for step, seconds, how in e.steps:
-        state = {"done": "done", "measured": f"~{estimate.duration(seconds)}",
-                 "guess": f"~{estimate.duration(seconds)}?", "": "no estimate"}[how]
+        state = ("done" if how == "done" else "no estimate" if seconds is None
+                 else f"~{estimate.duration(seconds)}{'?' if how == 'guess' else ''}")
         print(f"{step.number:>3}  {step.step.title[:56]:56}  {state}")
     print(f"\n{e.text()}")
     return 0
@@ -235,6 +248,9 @@ def iso(r: recipes.Recipe) -> int:
     for firmware in firmwares:
         log, screenshot = out / "logs" / f"boot-iso-{firmware}.log", out / f"screen-iso-{firmware}.png"
         if image.boot_test(None, None, target, log, screenshot, timeout=600, cdrom=True, uefi=firmware == "uefi"):
+            if problem := screen_problem(r, screenshot):
+                print(f"{firmware.upper()}: it boots, {problem}", file=sys.stderr)
+                return 1
             print(f"{firmware.upper()}: it boots, the login prompt came (the screen in {screenshot.relative_to(ROOT)})", flush=True)
             continue
         print(f"{firmware.upper()}: no login prompt; the end of the console ({log}):", file=sys.stderr)
@@ -256,6 +272,9 @@ def iso(r: recipes.Recipe) -> int:
     for firmware in firmwares:
         log, screenshot = out / "logs" / f"boot-installed-{firmware}.log", out / f"screen-installed-{firmware}.png"
         if image.boot_test(None, None, installed, log, screenshot, uefi=firmware == "uefi"):
+            if problem := screen_problem(r, screenshot):
+                print(f"the installed disk boots with {firmware.upper()}, {problem}", file=sys.stderr)
+                return 1  # (installed.img is kept, to look into)
             print(f"the installed disk boots with {firmware.upper()} (its own GRUB), the login prompt came", flush=True)
             continue
         print(f"the installed disk doesn't boot with {firmware.upper()}; the end of its console ({log}):", file=sys.stderr)
@@ -345,6 +364,9 @@ def boot(r: recipes.Recipe, console: bool = False) -> int:
     log = out / "logs" / "boot.log"
     screenshot = out / "screen.png"
     if image.boot_test(kernel, initramfs, out / "disk.img", log, screenshot):
+        if problem := screen_problem(r, screenshot):
+            print(f"it boots, {problem}", file=sys.stderr)
+            return 1
         print(f"it boots: the login prompt came (console in {log.relative_to(ROOT)}, the screen in {screenshot.relative_to(ROOT)})")
         return 0
     print(f"no login prompt; the end of the console ({log}):", file=sys.stderr)
