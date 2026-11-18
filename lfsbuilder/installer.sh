@@ -101,6 +101,13 @@ name=$(sed -n 's/^NAME="\(.*\)"$/\1/p' "$target/etc/os-release" | sed 's/ Linux$
 if [ -n "$name" ]; then
     sed -i "s|^#\?GRUB_DISTRIBUTOR=.*|GRUB_DISTRIBUTOR=\"${name//[^A-Za-z0-9 ._+-]/}\"|" "$target/etc/default/grub"
 fi
+# The distribution's picture behind the menu (gfxterm is grub-mkconfig's default when it has a font).
+if [ -f "$target/usr/share/argo/argo-grub-1024x768.png" ]; then
+    cp "$target/usr/share/argo/argo-grub-1024x768.png" "$target/boot/grub/argo.png"
+    sed -i 's|^#\?GRUB_BACKGROUND=.*|GRUB_BACKGROUND="/boot/grub/argo.png"|' "$target/etc/default/grub"
+    # Gentoo's file names one of its themes (Gentoo's artwork), and a theme wins over the background.
+    sed -i 's|^GRUB_THEME=|#GRUB_THEME=|' "$target/etc/default/grub"
+fi
 chroot "$target" grub-mkconfig -o /boot/grub/grub.cfg
 # The automatic install belongs to the live system only.
 rm -f "$target/etc/systemd/system/multi-user.target.wants/lfsbuilder-autoinstall.service"

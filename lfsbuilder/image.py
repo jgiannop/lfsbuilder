@@ -147,6 +147,14 @@ serial --unit=0 --speed=115200
 terminal_input console serial
 terminal_output console serial
 insmod all_video
+# The distribution's picture behind the menu, when the screen can show it (the serial console keeps the text).
+insmod png
+if loadfont unicode; then
+    set gfxmode=auto
+    insmod gfxterm
+    terminal_output gfxterm serial
+    background_image /boot/grub/argo.png
+fi
 
 menuentry "{title} (live)" {{
     linux /boot/vmlinuz root=live:CDLABEL={volume} rd.live.image rd.overlay console=tty0 console=ttyS0,115200
@@ -167,6 +175,7 @@ def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Pat
     (tree / "boot" / "initramfs.img").write_bytes(initramfs.read_bytes())
     volume = volume_id(r)
     (tree / "boot" / "grub" / "grub.cfg").write_text(GRUB_CFG.format(title=f"{r.name} {r.version}", volume=volume))
+    (tree / "boot" / "grub" / "argo.png").write_bytes(GRUB_BACKGROUND.read_bytes())
     tools.run("sh", "-c", 'sqfstar -quiet -no-progress -comp zstd "$1" < "$2"', "sh",
               tools.inside(tree / "LiveOS" / "squashfs.img"), tools.inside(rootfs))
     out.unlink(missing_ok=True)
@@ -174,6 +183,7 @@ def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Pat
     subprocess.run(["rm", "-rf", str(tree)], check=True)
 
 
+GRUB_BACKGROUND = Path(__file__).resolve().parent.parent / "branding" / "argo-grub-1024x768.png"
 OVMF = Path("/usr/share/ovmf/OVMF.fd")  # UEFI firmware for QEMU (Debian/Ubuntu's ovmf package)
 KVM_FAILED = b"KVM: entry failed"
 MEMORY_MB = 4096  # a desktop needs more than 2 GB

@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1440" width="1024" height="768">
+  <title>Argo Linux</title>
+  <!-- GRUB's background: the night sea, the ship and the name small at the bottom, under the menu. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1b2e" />
+      <stop offset="0.65" stop-color="#16325a" />
+      <stop offset="1" stop-color="#1d4a80" />
+    </linearGradient>
+    <style>
+      .hull { fill: #e8eef6; }
+      .sail { fill: #f2b544; }
+      .sail-band { fill: #d9822b; }
+      .line { stroke: #e8eef6; stroke-width: 4; stroke-linecap: round; fill: none; }
+      .oar { stroke: #e8eef6; stroke-width: 3.5; stroke-linecap: round; }
+      .sea { stroke: #5dade2; stroke-width: 6; stroke-linecap: round; fill: none; }
+      .eye { fill: #f2b544; }
+      .name { font-family: "Noto Sans", "DejaVu Sans", sans-serif; font-size: 112px; fill: #ffffff; }
+      .name-light { font-weight: 300; }
+      .name-bold { font-weight: 700; }
+      .swell { stroke: #5dade2; stroke-width: 3; fill: none; stroke-linecap: round; }
+    </style>
+  </defs>
+  <rect width="1920" height="1440" fill="url(#sky)" />
+  <g opacity="0.18" transform="translate(0 360)">
+    <path class="swell" d="M0 900 C160 870 320 870 480 900 S800 930 960 900 S1280 870 1440 900 S1760 930 1920 900" />
+    <path class="swell" d="M0 960 C160 935 320 935 480 960 S800 985 960 960 S1280 935 1440 960 S1760 985 1920 960" />
+    <path class="swell" d="M0 1020 C160 1000 320 1000 480 1020 S800 1040 960 1020 S1280 1000 1440 1020 S1760 1040 1920 1020" />
+  </g>
+  <g transform="translate(1390 1300) scale(0.55)">
+
+  <!-- mast and yard -->
+  <path class="line" d="M128 150 V52" />
+  <path class="line" d="M84 62 H172" />
+  <!-- the square sail, filled by the wind -->
+  <path class="sail" d="M88 64 H168 C172 92 172 116 166 138 H90 C84 116 84 92 88 64 Z" />
+  <path class="sail-band" d="M86.5 92 H169.5 C170 98 170 104 169.6 110 H86.4 C86 104 86 98 86.5 92 Z" />
+
+  <!-- oars, dipping into the sea -->
+  <g class="oar">
+    <path d="M70 168 L56 196" />
+    <path d="M94 170 L80 198" />
+    <path d="M118 171 L104 199" />
+    <path d="M142 171 L128 199" />
+    <path d="M166 170 L152 198" />
+  </g>
+
+  <!-- the hull: stern curling up on the left, the ram and the bow post on the right -->
+  <path class="hull" d="
+    M40 150
+    L198 150
+    C206 150 210 140 211 126
+    C212 116 220 112 226 118
+    C222 120 219 126 219 134
+    L216 158
+    L236 166
+    L232 172
+    L208 174
+    C170 186 92 186 62 176
+    C44 170 32 154 30 132
+    C28 112 40 96 56 98
+    C66 100 68 112 60 116
+    C54 118 50 112 54 108
+    C46 108 42 118 42 128
+    C42 138 42 146 40 150 Z" />
+  <!-- the eye painted on the bow -->
+  <circle class="eye" cx="200" cy="162" r="4" />
+
+  <!-- the sea -->
+  <path class="sea" d="M20 212 C40 202 60 202 80 212 S120 222 140 212 S180 202 200 212 S230 220 240 214" />
+  <path class="sea" d="M44 232 C60 224 76 224 92 232 S124 240 140 232 S172 224 188 232" opacity="0.6" />
+
+  <text class="name" x="262" y="168"><tspan class="name-bold">Argo</tspan><tspan class="name-light" dx="26">Linux</tspan></text>
+
+  </g>
+</svg>

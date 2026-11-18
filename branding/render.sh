@@ -32,3 +32,4 @@ render argo-wordmark-light.svg 440 128 argo-wordmark-light-440.png
 render argo-wordmark-light.svg 880 256 argo-wordmark-light-880.png
 render argo-background.svg 1920 1080 argo-background-1920x1080.png
 render argo-background-plain.svg 1920 1080 argo-background-plain-1920x1080.png
+render argo-grub.svg 1024 768 argo-grub-1024x768.png

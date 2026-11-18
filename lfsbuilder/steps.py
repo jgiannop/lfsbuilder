@@ -242,7 +242,7 @@ def branding(r: Recipe) -> Step:
     the background. Files no package owns, so updates keep them."""
     script = "set -e\n"
     for name in ("argo-background-1920x1080.png", "argo-background-plain-1920x1080.png", "argo-wordmark-440.png",
-                 "argo-wordmark-light-440.png", "argo-256.png"):
+                 "argo-wordmark-light-440.png", "argo-256.png", "argo-grub-1024x768.png"):  # (GRUB's: the installer)
         script += _binary(f"{ARGO}/{name}", (BRANDING / name).read_bytes())
     for size in (64, 128, 256, 512):
         script += _binary(f"/usr/share/icons/hicolor/{size}x{size}/apps/argo-linux.png", (BRANDING / f"argo-{size}.png").read_bytes())
@@ -267,8 +267,63 @@ def branding(r: Recipe) -> Step:
         # The greeter reads /etc/lightdm/lightdm-gtk-greeter.conf last, and Gentoo's sets background= (its own picture).
         script += f"sed -i 's|^#\\?background=.*|background={background}|' /etc/lightdm/lightdm-gtk-greeter.conf\n"
         script += f"grep -qx 'background={background}' /etc/lightdm/lightdm-gtk-greeter.conf\n"
+    if "kde-plasma/plasma-meta" in r.packages:
+        # Plasma's default wallpaper is the look-and-feel package's [Wallpaper] Image: a package of our
+        # own (Breeze's defaults with our wallpaper; the rest falls back to Breeze), chosen system-wide.
+        script += _file("/usr/share/wallpapers/Argo/metadata.json", PLASMA_WALLPAPER)
+        script += f"mkdir -p /usr/share/wallpapers/Argo/contents/images && cp {background} /usr/share/wallpapers/Argo/contents/images/1920x1080.png\n"
+        script += _file(f"/usr/share/plasma/look-and-feel/{PLASMA_LNF}/metadata.json", PLASMA_LNF_METADATA)
+        script += (f"mkdir -p /usr/share/plasma/look-and-feel/{PLASMA_LNF}/contents\n"
+                   f"sed 's/^Image=.*/Image=Argo/' /usr/share/plasma/look-and-feel/org.kde.breeze.desktop/contents/defaults"
+                   f" > /usr/share/plasma/look-and-feel/{PLASMA_LNF}/contents/defaults\n"
+                   f"grep -qx 'Image=Argo' /usr/share/plasma/look-and-feel/{PLASMA_LNF}/contents/defaults\n")
+        script += ("touch /etc/xdg/kdeglobals\n"
+                   "if grep -q '^LookAndFeelPackage=' /etc/xdg/kdeglobals; then\n"
+                   f"    sed -i 's/^LookAndFeelPackage=.*/LookAndFeelPackage={PLASMA_LNF}/' /etc/xdg/kdeglobals\n"
+                   "else\n"
+                   f"    printf '\\n[KDE]\\nLookAndFeelPackage={PLASMA_LNF}\\n' >> /etc/xdg/kdeglobals\n"
+                   "fi\n")
+    if "xfce-base/xfce4-meta" in r.packages:
+        # xfdesktop's default wallpaper is a file of its own, built into it: ours in its place, now and
+        # (a Portage hook, run as the package is installed) at every update of xfdesktop.
+        script += _file("/etc/portage/env/xfce-base/xfdesktop", XFDESKTOP_HOOK.format(argo=ARGO))
+        script += f"( ED=/; source /etc/portage/env/xfce-base/xfdesktop; argo_wallpaper )\n"
 
     return Step("branding", f"{r.name}: logo and login screen", script)
+
+
+PLASMA_LNF = "org.argolinux.desktop"
+PLASMA_LNF_METADATA = """{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Id": "org.argolinux.desktop",
+        "Name": "Argo Linux",
+        "Description": "Breeze, with Argo Linux's wallpaper",
+        "License": "GPL-2.0-or-later"
+    }
+}"""
+PLASMA_WALLPAPER = """{
+    "KPlugin": {
+        "Id": "Argo",
+        "Name": "Argo Linux",
+        "License": "CC-BY-SA-4.0"
+    }
+}"""
+XFDESKTOP_HOOK = """# Written by lfsbuilder: Argo Linux's wallpaper as xfdesktop's default (the file built into it).
+argo_wallpaper() {{
+    local dir="${{ED%/}}/usr/share/backgrounds/xfce"
+    mkdir -p "$dir"
+    rm -f "$dir/xfce-x.svg"
+    # The picture inside the SVG (a data: URI): GdkPixbuf, which xfdesktop loads it with, doesn't
+    # know the file's directory, so a picture beside it isn't found (a black desktop).
+    {{
+        printf '%s' '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><image width="1920" height="1080" href="data:image/png;base64,'
+        base64 -w0 {argo}/argo-background-1920x1080.png
+        printf '%s\\n' '"/></svg>'
+    }} > "$dir/xfce-x.svg"
+}}
+post_src_install() {{ argo_wallpaper; }}
+"""
 
 
 TRUST = Path(__file__).with_name("trust.sh")

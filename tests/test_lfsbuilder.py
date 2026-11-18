@@ -223,6 +223,22 @@ class Identity(unittest.TestCase):
                 for other, mark in marks.items():
                     self.assertEqual(mark in script, other == dm)
 
+    def test_each_desktop_gets_the_wallpaper_its_own_way(self):
+        plasma = steps.branding(recipe.load(RECIPES / "plasma.toml")).script
+        xfce = steps.branding(recipe.load(RECIPES / "xfce.toml")).script
+        self.assertIn("LookAndFeelPackage=org.argolinux.desktop", plasma)
+        self.assertIn("Image=Argo", plasma)
+        self.assertNotIn("xfdesktop", plasma)
+        self.assertIn("/etc/portage/env/xfce-base/xfdesktop", xfce)
+        self.assertIn("post_src_install", xfce)
+        self.assertNotIn("LookAndFeelPackage", xfce)
+
+    def test_the_installer_puts_our_picture_behind_grub(self):
+        text = steps.INSTALLER.read_text()
+        self.assertIn('GRUB_BACKGROUND="/boot/grub/argo.png"', text)
+        self.assertIn("s|^GRUB_THEME=|#GRUB_THEME=|", text)  # Gentoo's theme (its artwork) would win
+        self.assertIn("background_image /boot/grub/argo.png", image.GRUB_CFG)
+
 
 class Branding(unittest.TestCase):
     def test_the_logo_files_are_well_formed_and_rendered(self):
