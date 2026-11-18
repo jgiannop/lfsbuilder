@@ -10,7 +10,7 @@ version = "0.1"
 [base]
 init = "systemd"                 # or "openrc"
 stage3 = "20261115T170104Z"      # the stage3 build, as Gentoo's autobuilds name it
-repository = "e19f4a84f0138c2703c3d36e5e6b0f58e6fd4aeb"  # a commit of github.com/gentoo-mirror/gentoo
+repository = "66eb56bf5b781b6e7f4c04a5bc4e9435352aedff"  # a commit of github.com/gentoo-mirror/gentoo
 profile = ""                     # empty: default/linux/amd64/23.0/<init>; or e.g. "default/linux/amd64/23.0/desktop/gnome/systemd"
 cpu = "x86-64"                   # or "x86-64-v3" (2015+ processors: AVX2); -march and Gentoo's binary packages follow it
 cflags = "-O2 -pipe"             # -march=<cpu> is added
