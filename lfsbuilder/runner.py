@@ -118,9 +118,14 @@ def _run_one(p: Planned, parent: str, shared: Shared, logs: Path) -> bool:
     container = f"{CONTAINER}-{p.fingerprint[:12]}"
     subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     with (logs / p.log_name).open("w") as out:
+        # The script comes on stdin, not as an argument: one argument can't exceed 128 KB (Linux's
+        # MAX_ARG_STRLEN), and a step carrying pictures (branding) does. The outer bash reads it whole
+        # and runs it as a file (descriptor 3) with stdin /dev/null, so no command in it can read the
+        # script's text, and the trace lines are as they were (eval would double PS4's first #).
         result = subprocess.run(
-            ["docker", "run", "--name", container, "-w", "/", *shared.args(), parent, "/bin/bash", "-l", "-c", _script(p.step)],
-            stdout=out, stderr=subprocess.STDOUT,
+            ["docker", "run", "-i", "--name", container, "-w", "/", *shared.args(), parent,
+             "/bin/bash", "-c", 'script=$(cat) && exec /bin/bash -l /dev/fd/3 3<<<"$script" </dev/null'],
+            input=_script(p.step).encode(), stdout=out, stderr=subprocess.STDOUT,
         )
     try:
         if result.returncode != 0:

@@ -4,7 +4,7 @@
 # (Later, the form writes it; for now it is written by hand.)
 
 [distribution]
-name = "Example"
+name = "Argo Linux"
 version = "0.1"
 
 [base]
@@ -28,7 +28,7 @@ global = []                      # USE flags for every package, e.g. ["-bluetoot
 install = ["app-editors/nano", "app-misc/tmux"]
 
 [system]
-hostname = "gentoo"
+hostname = "argo"
 domain = "localdomain"
 locale = "en_US.UTF-8"
 timezone = "Europe/Athens"

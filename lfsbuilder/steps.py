@@ -13,6 +13,8 @@ disk and the boot loader):
   <package>   each package of the recipe, one step each, in its order
   services    the services to start at boot (the recipe's, NetworkManager)
   users       root's password, the accounts, sudo for "wheel"
+  branding    the distribution's logo (icons, /usr/share/argo) and its login
+              screen: GDM's logo, SDDM's Breeze theme, LightDM's background
   installer   GRUB (BIOS and UEFI), the disk tools, and lfsbuilder-install,
               which puts the live system (iso) on a disk; last, so adding it
               changed no other step's checkpoint
@@ -27,6 +29,7 @@ exported, from the recipe.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import shlex
 from pathlib import Path
@@ -216,6 +219,58 @@ def installer(r: Recipe) -> Step:
     return Step("installer", "GRUB, disk tools and the installer", script)
 
 
+BRANDING = Path(__file__).resolve().parent.parent / "branding"  # the PNGs made by branding/render.sh
+ARGO = "/usr/share/argo"
+
+
+def _binary(path: str, data: bytes) -> str:
+    """A shell command writing `data` to `path`, as base64 in the script (so it is part of the step's fingerprint)."""
+    encoded = base64.encodebytes(data).decode()
+    return f"mkdir -p {shlex.quote(path.rsplit('/', 1)[0])}\nbase64 -d > {shlex.quote(path)} << 'LFSBUILDER_EOF'\n{encoded}LFSBUILDER_EOF\n"
+
+
+GDM_PROFILE = "user-db:user\nsystem-db:gdm\nfile-db:/usr/share/gdm/greeter-dconf-defaults\n"
+USER_PROFILE = "user-db:user\nsystem-db:local\n"
+
+
+def branding(r: Recipe) -> Step:
+    """The logo and the login screens. The pictures go to /usr/share/argo and
+    the logo is the icon "argo-linux" (os-release's LOGO, GNOME's About
+    page); each login screen the recipe starts gets them: GDM its logo and
+    GNOME the background as wallpaper (dconf), SDDM the Breeze theme (it
+    showed its plain default) with the background, LightDM's GTK greeter
+    the background. Files no package owns, so updates keep them."""
+    script = "set -e\n"
+    for name in ("argo-background-1920x1080.png", "argo-background-plain-1920x1080.png", "argo-wordmark-440.png",
+                 "argo-wordmark-light-440.png", "argo-256.png"):
+        script += _binary(f"{ARGO}/{name}", (BRANDING / name).read_bytes())
+    for size in (64, 128, 256, 512):
+        script += _binary(f"/usr/share/icons/hicolor/{size}x{size}/apps/argo-linux.png", (BRANDING / f"argo-{size}.png").read_bytes())
+    script += f"mkdir -p /usr/share/pixmaps && cp {ARGO}/argo-256.png /usr/share/pixmaps/argo-linux.png\n"
+    script += "! command -v gtk-update-icon-cache >/dev/null || gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor\n"
+    background = f"{ARGO}/argo-background-1920x1080.png"
+    if "gdm" in r.services:
+        script += _file("/etc/dconf/profile/gdm", GDM_PROFILE)
+        script += _file("/etc/dconf/db/gdm.d/01-argo", f"[org/gnome/login-screen]\nlogo='{ARGO}/argo-wordmark-light-440.png'\n")
+        script += _file("/etc/dconf/profile/user", USER_PROFILE)
+        script += _file("/etc/dconf/db/local.d/01-argo",
+                        f"[org/gnome/desktop/background]\npicture-uri='file://{background}'\npicture-uri-dark='file://{background}'\n"
+                        f"[org/gnome/desktop/screensaver]\npicture-uri='file://{background}'\n")
+        script += "dconf update\n"
+    if "sddm" in r.services:
+        script += _file("/etc/sddm.conf.d/50-argo.conf", "[Theme]\nCurrent=breeze\n")
+        # Breeze puts its clock where the background's logo is: the plain sea, and Breeze's own logo (at the bottom).
+        script += _file("/usr/share/sddm/themes/breeze/theme.conf.user",
+                        f"[General]\ntype=image\nbackground={ARGO}/argo-background-plain-1920x1080.png\n"
+                        f"showlogo=shown\nlogo={ARGO}/argo-wordmark-light-440.png\n")
+    if "lightdm" in r.services:
+        # The greeter reads /etc/lightdm/lightdm-gtk-greeter.conf last, and Gentoo's sets background= (its own picture).
+        script += f"sed -i 's|^#\\?background=.*|background={background}|' /etc/lightdm/lightdm-gtk-greeter.conf\n"
+        script += f"grep -qx 'background={background}' /etc/lightdm/lightdm-gtk-greeter.conf\n"
+
+    return Step("branding", f"{r.name}: logo and login screen", script)
+
+
 TRUST = Path(__file__).with_name("trust.sh")
 BINHOST_KEY = "/usr/share/openpgp-keys/lfsbuilder-binhost.asc"
 
@@ -280,7 +335,7 @@ def all_steps(r: Recipe) -> list[Step]:
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
     steps = [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages),
-             *([enabled] if enabled else []), users(r), installer(r), *([updates(r)] if r.binhost else [])]
+             *([enabled] if enabled else []), users(r), branding(r), installer(r), *([updates(r)] if r.binhost else [])]
     # Each fix goes in at the start of the step it was found in (fixes.py).
     names = {s.name for s in steps}
     for fix in r.fixes:

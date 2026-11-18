@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" width="1920" height="1080">
+  <title>Argo Linux</title>
+  <!-- The night sea alone: for login screens that show the logo themselves (SDDM's Breeze). -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0d1b2e" />
+      <stop offset="0.65" stop-color="#16325a" />
+      <stop offset="1" stop-color="#1d4a80" />
+    </linearGradient>
+    <style>
+      .hull { fill: #e8eef6; }
+      .sail { fill: #f2b544; }
+      .sail-band { fill: #d9822b; }
+      .line { stroke: #e8eef6; stroke-width: 4; stroke-linecap: round; fill: none; }
+      .oar { stroke: #e8eef6; stroke-width: 3.5; stroke-linecap: round; }
+      .sea { stroke: #5dade2; stroke-width: 6; stroke-linecap: round; fill: none; }
+      .eye { fill: #f2b544; }
+      .name { font-family: "Noto Sans", "DejaVu Sans", sans-serif; font-size: 112px; fill: #ffffff; }
+      .name-light { font-weight: 300; }
+      .name-bold { font-weight: 700; }
+      .swell { stroke: #5dade2; stroke-width: 3; fill: none; stroke-linecap: round; }
+    </style>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#sky)" />
+  <g opacity="0.18">
+    <path class="swell" d="M0 900 C160 870 320 870 480 900 S800 930 960 900 S1280 870 1440 900 S1760 930 1920 900" />
+    <path class="swell" d="M0 960 C160 935 320 935 480 960 S800 985 960 960 S1280 935 1440 960 S1760 985 1920 960" />
+    <path class="swell" d="M0 1020 C160 1000 320 1000 480 1020 S800 1040 960 1020 S1280 1000 1440 1020 S1760 1040 1920 1020" />
+  </g>
+</svg>

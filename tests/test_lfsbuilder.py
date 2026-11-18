@@ -70,6 +70,10 @@ class Recipes(unittest.TestCase):
         self.refused(example_text(**{"stage3 =": 'stage3 = "latest"'}), "base.stage3")
         self.refused(example_text(**{"repository =": 'repository = "master"'}), "full commit id")
 
+    def test_the_name_and_version_are_checked(self):
+        self.refused(example_text(**{"name =": 'name = "Argo\\" ; reboot"'}), "distribution.name")
+        self.refused(example_text(**{"version =": 'version = "0.1 beta"'}), "distribution.version")
+
     def test_the_package_server_is_checked(self):
         self.refused(example_text(**{"server =": 'server = "http://x/$(id)/"'}), "must be an http(s) URL")
         self.refused(example_text(**{"server =": 'server = "http://10.0.2.2:8080"'}), "must be an http(s) URL")
@@ -196,6 +200,43 @@ class Logs(unittest.TestCase):
         text = repair._redacted(recipe.load(RECIPES / "example.toml"))
         self.assertNotIn(HASH, text)
         self.assertIn("(hidden)", text)
+
+
+class Identity(unittest.TestCase):
+    def test_the_system_says_its_own_name(self):
+        r = recipe.load(RECIPES / "example.toml")
+        files = image.system_files(r)
+        self.assertEqual(files["etc/os-release"][0], "file")  # a file in place of baselayout's link
+        release = dict(line.split("=", 1) for line in files["etc/os-release"][1].splitlines())
+        self.assertEqual((release["NAME"], release["ID"], release["ID_LIKE"], release["PRETTY_NAME"]),
+                         ('"Argo Linux"', '"argo-linux"', '"gentoo"', '"Argo Linux 0.1"'))
+        self.assertIn("Argo Linux 0.1", files["etc/issue"][1])
+        self.assertNotIn("Gentoo", files["etc/os-release"][1] + files["etc/issue"][1])
+        self.assertEqual(r.short_name, "Argo")
+
+    def test_each_desktop_gets_its_own_login_screen(self):
+        marks = {"gdm": "org/gnome/login-screen", "sddm": "Current=breeze", "lightdm": "/etc/lightdm/lightdm-gtk-greeter.conf"}
+        for name, dm in (("example", None), ("gnome", "gdm"), ("plasma", "sddm"), ("xfce", "lightdm")):
+            with self.subTest(name):
+                script = steps.branding(recipe.load(RECIPES / f"{name}.toml")).script
+                self.assertIn("/usr/share/icons/hicolor/256x256/apps/argo-linux.png", script)
+                for other, mark in marks.items():
+                    self.assertEqual(mark in script, other == dm)
+
+
+class Branding(unittest.TestCase):
+    def test_the_logo_files_are_well_formed_and_rendered(self):
+        import xml.dom.minidom
+        for svg in sorted((ROOT / "branding").glob("*.svg")):
+            with self.subTest(svg.name):
+                xml.dom.minidom.parse(str(svg))
+        for name in ("argo-background-1920x1080.png", "argo-background-plain-1920x1080.png", "argo-wordmark-light-440.png"):
+            with self.subTest(name):
+                png = (ROOT / "branding" / name).read_bytes()
+                self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+                svg = (ROOT / "branding" / name.replace("-1920x1080", "").replace("-440", "")).with_suffix(".svg")
+                self.assertGreaterEqual((ROOT / "branding" / name).stat().st_mtime, svg.stat().st_mtime,
+                                        f"{name} is older than {svg.name}: run branding/render.sh")
 
 
 class Pictures(unittest.TestCase):

@@ -1,6 +1,6 @@
 # lfsbuilder
 
-A reproducible, customizable Linux distribution builder on [Gentoo](https://www.gentoo.org/).
+A reproducible, customizable Linux distribution builder on [Gentoo](https://www.gentoo.org/). The distribution it makes is **Argo Linux**, a Gentoo derivative (the recipes' `[distribution] name`).
 
 A **recipe** (a TOML file, written by hand or by the form) says what the system is to be: systemd or OpenRC, the CPU level and compiler flags, USE flags for the whole system and for single packages, a desktop, the packages, users, host name, language, time zone, network, the output. It pins a Gentoo stage3 and a commit of the Gentoo repository, both checked against Gentoo's signing keys, and every step of the build runs inside Docker (no `--privileged`), with a checkpoint after each one, so the same recipe gives the same system on any machine and a change rebuilds only what it affects. Gentoo's official binary packages are used where they match, so only what you customize is compiled: a GNOME desktop with Firefox builds in about 40 minutes.
 

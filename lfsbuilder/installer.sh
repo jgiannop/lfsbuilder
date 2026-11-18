@@ -96,6 +96,11 @@ consoles=$(grep -o 'console=[^ ]*' /proc/cmdline | tr '\n' ' ' || true)
 if [ -n "$consoles" ]; then
     sed -i "s|^#\?GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"${consoles% }\"|" "$target/etc/default/grub"
 fi
+# The menu says the distribution's name ("Argo" -> "Argo GNU/Linux"), from its os-release.
+name=$(sed -n 's/^NAME="\(.*\)"$/\1/p' "$target/etc/os-release" | sed 's/ Linux$//')
+if [ -n "$name" ]; then
+    sed -i "s|^#\?GRUB_DISTRIBUTOR=.*|GRUB_DISTRIBUTOR=\"${name//[^A-Za-z0-9 ._+-]/}\"|" "$target/etc/default/grub"
+fi
 chroot "$target" grub-mkconfig -o /boot/grub/grub.cfg
 # The automatic install belongs to the live system only.
 rm -f "$target/etc/systemd/system/multi-user.target.wants/lfsbuilder-autoinstall.service"

@@ -14,6 +14,7 @@ saves a picture of the screen (a desktop's login screen, if it has one).
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import selectors
@@ -47,6 +48,12 @@ def system_files(r: Recipe, live: bool = False) -> dict[str, tuple[str, str]]:
         "etc/hosts": ("file", f"127.0.0.1  localhost\n::1        localhost\n127.0.1.1  {fqdn} {r.hostname}\n"),
         "etc/fstab": ("file", f"# Written by lfsbuilder\n{root}"),
     }
+    # Who the system is: the distribution's name, not Gentoo's (Gentoo's name and logo are Gentoo's to use).
+    # A file in place of baselayout's link to /usr/lib/os-release; /etc is protected, so updates keep it.
+    files["etc/os-release"] = ("file", "".join(f"{k}={json.dumps(v)}\n" for k, v in (
+        ("NAME", r.name), ("ID", r.os_id), ("ID_LIKE", "gentoo"), ("VERSION", r.version), ("VERSION_ID", r.version),
+        ("PRETTY_NAME", f"{r.name} {r.version}"), ("ANSI_COLOR", "1;34"), ("LOGO", "argo-linux"))))  # the branding step's icon
+    files["etc/issue"] = ("file", f"\n{r.name} {r.version} (\\s \\m \\r) \\t\n\n")  # agetty's \\s etc.
     if r.init == "systemd":
         files["etc/resolv.conf"] = ("link", "../run/systemd/resolve/stub-resolv.conf")
     else:
@@ -67,7 +74,9 @@ def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False) 
         with tarfile.open(fileobj=source.stdout, mode="r|") as tin, tarfile.open(part, "w", format=tarfile.PAX_FORMAT) as tout:
             for member in tin:
                 name = member.name.removeprefix("./")
-                if name in DOCKER_FILES or any(name == d or name.startswith(d + "/") for d in LEFT_OUT):
+                # Docker's files and those written from the recipe below (one copy only: tools that read
+                # the tar keep the first of two, which would be the image's own os-release, say).
+                if name in DOCKER_FILES or name in replaced or any(name == d or name.startswith(d + "/") for d in LEFT_OUT):
                     continue
                 data = tin.extractfile(member) if member.isreg() else None
                 if member.isreg() and (KERNEL.match(name) or INITRAMFS.match(name)):

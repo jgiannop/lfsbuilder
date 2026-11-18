@@ -7,7 +7,7 @@
 # (Later, the form writes it; for now it is written by hand.)
 
 [distribution]
-name = "Example OpenRC"
+name = "Argo Linux"
 version = "0.1"
 
 [base]

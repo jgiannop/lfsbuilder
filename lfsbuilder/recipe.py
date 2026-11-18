@@ -70,6 +70,16 @@ class Recipe:
         combination has its own (a Docker volume, a directory on the server)."""
         return f"{self.cpu}-{hashlib.sha256(f'{self.cpu} {self.cflags}'.encode()).hexdigest()[:12]}"
 
+    @property
+    def os_id(self) -> str:
+        """The distribution's ID in os-release: "Argo Linux" -> "argo-linux"."""
+        return re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
+
+    @property
+    def short_name(self) -> str:
+        """The name less a trailing "Linux": GRUB adds "GNU/Linux" itself."""
+        return re.sub(r"\s+Linux$", "", self.name) or self.name
+
     def binhost_key_text(self) -> str:
         return (self.path.parent / self.binhost_key).read_text(encoding="ascii")
 
@@ -92,6 +102,9 @@ _KEYMAP = re.compile(r"^[A-Za-z0-9_-]+$")
 _SERVICE = re.compile(r"^[A-Za-z0-9@._-]+$")
 _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FULL_NAME = re.compile(r"^[^:,\n]*$")
+# The name and version reach GRUB's configuration, os-release and the console's banner.
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$")
+_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
 _URL = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*/$")
 _KEY_PATH = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.asc$")
 # An armored public key and nothing else: it goes into a script between heredoc markers.
@@ -124,7 +137,7 @@ def load(path: Path) -> Recipe:
 
     recipe = Recipe(
         path=path,
-        name=str(dist.get("name", "Gentoo")),
+        name=str(dist.get("name", "Argo Linux")),
         version=str(dist.get("version", "0.1")),
         init=str(base.get("init", "systemd")),
         stage3=str(base.get("stage3", "")),
@@ -138,7 +151,7 @@ def load(path: Path) -> Recipe:
         use=strings(use.get("global", []), "use.global"),
         package_use={str(k): strings(v, f"use.packages.{k}") for k, v in section("packages", use).items()},
         packages=strings(packages.get("install", []), "packages.install"),
-        hostname=str(system.get("hostname", "gentoo")),
+        hostname=str(system.get("hostname", "argo")),
         domain=str(system.get("domain", "localdomain")),
         locale=str(system.get("locale", "en_US.UTF-8")),
         timezone=str(system.get("timezone", "UTC")),
@@ -167,6 +180,10 @@ def load(path: Path) -> Recipe:
     if not recipe.profile:
         recipe.profile = f"default/linux/amd64/23.0/{recipe.init}" if recipe.init == "systemd" else "default/linux/amd64/23.0"
 
+    if not _NAME.match(recipe.name) or not re.search(r"[a-z0-9]", recipe.name.lower()):
+        problems.append(f"distribution.name {recipe.name!r}: letters, digits, spaces and . _ + - (up to 40)")
+    if not _VERSION.match(recipe.version):
+        problems.append(f"distribution.version {recipe.version!r}: letters, digits and . _ + -, no spaces")
     if recipe.init not in INITS:
         problems.append(f"base.init must be one of {', '.join(INITS)}, not {recipe.init!r}")
     if not _STAGE3.match(recipe.stage3):
