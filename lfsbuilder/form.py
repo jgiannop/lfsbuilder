@@ -4,16 +4,19 @@
 
 Everything the form shows is a field of the recipe (recipe.py), and saving
 writes the recipe with recipe.dump(); the form holds no state of its own.
-Check, Build and Boot run `python3 -m lfsbuilder ...` on the saved recipe
-and show its output; when Check finds USE changes the recipe needs, the form
-offers to add them.
+Check, Build, Boot test, Make ISO and Publish run `python3 -m lfsbuilder ...`
+on the saved recipe and show its output; when Check finds USE changes the
+recipe needs, the form offers to add them. "Serve updates" runs the package
+server (`serve --bind 0.0.0.0`) until it is switched off or the form closes.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt
@@ -25,12 +28,38 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import gentoo, presets, recipe as recipes, steps
+from . import binhost, gentoo, presets, recipe as recipes, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT = ROOT / "recipes" / "example.toml"
 _STEP_LINE = re.compile(r"^\s*(?P<number>\d+)  (?P<title>.+?)\s+(?:\.\.\.|done before)")
 _SUGGESTED = re.compile(r'^"(?P<package>[^"]+)" = \[(?P<flags>[^\]]*)\]$')
+WWW = ROOT / "work" / "binhost" / "www"
+DEFAULT_KEY = "keys/binhost.asc"
+
+
+def last_published(stem: str, www: Path = WWW) -> float | None:
+    """When the recipe's argo branch was last published (its commit's time), or None."""
+    git = www / binhost.OVERLAY
+    if not (git / "HEAD").exists():
+        return None
+    result = subprocess.run(["git", "-C", str(git), "log", "-1", "--format=%ct", f"refs/heads/{stem}", "--"],
+                            capture_output=True, text=True)
+    return float(result.stdout) if result.returncode == 0 and result.stdout.strip() else None
+
+
+def published_text(when: float | None, now: float | None = None) -> tuple[str, bool]:
+    """What the form says about the last publish, and whether it is a warning."""
+    if when is None:
+        return "Not published yet.", True
+    days = int(((now if now is not None else time.time()) - when) // 86400)
+    left = binhost.MAX_AGE_DAYS - days
+    date = time.strftime("%Y-%m-%d", time.localtime(when))
+    if left <= 0:
+        return (f"Last published {date}, {days} days ago: installed systems now refuse this release. Publish again.", True)
+    if left <= 7:
+        return (f"Last published {date}, {days} days ago: systems refuse it in {left} days. Publish again soon.", True)
+    return f"Last published {date} ({days} days ago). Publish at least every {binhost.MAX_AGE_DAYS} days.", False
 
 
 def _lines(text: str) -> list[str]:
@@ -68,6 +97,8 @@ class Form(QMainWindow):
             ("Check", "check", "Ask Portage what the recipe would build, and which USE changes it needs"),
             ("Build", "build", "Build the system in Docker (a checkpoint after every step)"),
             ("Boot test", "boot", "Make a disk image and boot it in QEMU; saves a picture of the screen"),
+            ("Make ISO", "iso", "Make the live ISO with its installer, and test installing from it (BIOS and UEFI)"),
+            ("Publish", "publish", "Sign the built packages and the release, and put them on the package server"),
         ):
             b = QPushButton(label)
             b.setToolTip(tip)
@@ -76,11 +107,16 @@ class Form(QMainWindow):
             self.run_buttons.append(b)
         self.repair = QCheckBox("Repair failures with Claude")
         self.repair.setToolTip("When a step fails: check, then Claude Code, finds a fix; it is saved beside the recipe and the build goes on")
-        buttons.insertWidget(buttons.count() - 2, self.repair)
+        buttons.insertWidget(buttons.indexOf(self.run_buttons[1]) + 1, self.repair)  # beside Build
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop)
         buttons.addWidget(self.stop_button)
+        self.serve_button = QPushButton("Serve updates", checkable=True)
+        self.serve_button.setToolTip("Run the package server on this PC (port 8080, every network) for installed systems")
+        self.serve_button.toggled.connect(self.serve)
+        self.server: QProcess | None = None
+        buttons.addWidget(self.serve_button)
 
         top = QWidget()
         layout = QVBoxLayout(top)
@@ -116,7 +152,21 @@ class Form(QMainWindow):
         self.version = QLineEdit()
         form.addRow("Distribution name", self.name)
         form.addRow("Version", self.version)
+        form.addRow(QLabel("Raise the version for every release: installed systems update to a higher one only."))
         layout.addWidget(identity)
+
+        updates = QGroupBox("Updates")
+        form = QFormLayout(updates)
+        self.updates = QCheckBox("Installed systems take updates from a package server")
+        self.server_url = QLineEdit(placeholderText="http://192.168.1.93:8080/")
+        self.server_key = QLineEdit(placeholderText=DEFAULT_KEY)
+        self.published = QLabel(wordWrap=True)
+        form.addRow(self.updates)
+        form.addRow("Server address", self.server_url)
+        form.addRow("Signing key (public, beside the recipe)", self.server_key)
+        form.addRow("Published", self.published)
+        self.updates.toggled.connect(self._update_fields)
+        layout.addWidget(updates)
 
         base = QGroupBox("Base")
         form = QFormLayout(base)
@@ -272,6 +322,18 @@ class Form(QMainWindow):
         box.addItems(values)
         return box
 
+    def _update_fields(self) -> None:
+        for field in (self.server_url, self.server_key):
+            field.setEnabled(self.updates.isChecked())
+
+    def _show_published(self) -> None:
+        if not self.updates.isChecked():
+            self.published.setText("")
+            return
+        text, warning = published_text(last_published(self.path.stem))
+        self.published.setText(text)
+        self.published.setStyleSheet("color: #b00020;" if warning else "")
+
     def _network_fields(self) -> None:
         for field in (self.address, self.gateway, self.dns):
             field.setEnabled(self.static.isChecked())
@@ -288,6 +350,11 @@ class Form(QMainWindow):
         self.path_label.setText(f"Recipe: {path}")
         self.name.setText(r.name)
         self.version.setText(r.version)
+        self.updates.setChecked(bool(r.binhost))
+        self.server_url.setText(r.binhost)
+        self.server_key.setText(r.binhost_key or DEFAULT_KEY)
+        self._update_fields()
+        self._show_published()
         self.init.setCurrentIndex(self.init.findData(r.init))
         self.cpu.setCurrentIndex(self.cpu.findData(r.cpu))
         self.binary.setChecked(r.binary_packages)
@@ -371,6 +438,8 @@ class Form(QMainWindow):
             timezone=self.timezone.currentText().strip(), keymap=self.keymap.currentText().strip(),
             network=network, output={**r.output, "size_gb": self.size.value()},
             root_password=self.root_hash, sudo=self.sudo.isChecked(), accounts=accounts, services=services,
+            binhost=self.server_url.text().strip() if self.updates.isChecked() else "",
+            binhost_key=(self.server_key.text().strip() or DEFAULT_KEY) if self.updates.isChecked() else "",
         )
 
     # Users
@@ -487,6 +556,8 @@ class Form(QMainWindow):
         self.stop_button.setEnabled(False)
         self.output.appendPlainText(f"\n(finished, exit code {code})")
         self.progress.setText(f"{command}: {'done' if code == 0 else 'failed (exit code %d)' % code}")
+        if command == "publish":
+            self._show_published()
         if command == "check":
             suggested = [m for m in map(_SUGGESTED.match, self.output_text.splitlines()) if m]
             if suggested:
@@ -515,6 +586,29 @@ class Form(QMainWindow):
     def stop(self) -> None:
         if self.process:
             self.process.terminate()
+
+    def serve(self, on: bool) -> None:
+        """The package server, run beside whatever else runs; its output goes to the output pane too."""
+        if not on:
+            if self.server:
+                self.server.terminate()
+                self.server.waitForFinished(3000)
+            self.server = None
+            self.serve_button.setText("Serve updates")
+            return
+        self.server = QProcess(self)
+        self.server.setWorkingDirectory(str(ROOT))
+        self.server.setProcessChannelMode(QProcess.MergedChannels)
+        self.server.readyReadStandardOutput.connect(lambda: self.output.appendPlainText(
+            bytes(self.server.readAllStandardOutput()).decode(errors="replace").rstrip()) if self.server else None)
+        self.server.finished.connect(lambda *_: self.serve_button.setChecked(False))
+        self.output.appendPlainText("$ python3 -m lfsbuilder serve --bind 0.0.0.0")
+        self.server.start("python3", ["-u", "-m", "lfsbuilder", "serve", "--bind", "0.0.0.0"])
+        self.serve_button.setText("Serving updates (on)")
+
+    def closeEvent(self, event) -> None:
+        self.serve_button.setChecked(False)
+        super().closeEvent(event)
 
 
 def main() -> int:
