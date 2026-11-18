@@ -8,6 +8,7 @@ No Docker, no network: only what can be checked from the code itself.
 from __future__ import annotations
 
 import dataclasses
+import shutil
 import struct
 import tempfile
 import unittest
@@ -45,12 +46,15 @@ class Recipes(unittest.TestCase):
     def test_dump_then_load_gives_the_same_recipe(self):
         for name in ("example", "gnome", "openrc"):
             with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                shutil.copytree(RECIPES / "keys", Path(d) / "keys")  # [updates] key is a file beside the recipe
                 original = recipe.load(RECIPES / f"{name}.toml")
                 again = recipe.load(write(Path(d), recipe.dump(original)))
                 self.assertEqual(dataclasses.replace(original, path=again.path), again)
 
     def refused(self, text: str, words: str) -> None:
         with tempfile.TemporaryDirectory() as d, self.assertRaises(recipe.RecipeError) as caught:
+            shutil.copytree(RECIPES / "keys", Path(d) / "keys")
+            write(Path(d), "not a key\n", "keys/bad.asc")
             recipe.load(write(Path(d), text))
         self.assertIn(words, str(caught.exception))
 
@@ -65,6 +69,13 @@ class Recipes(unittest.TestCase):
         self.refused(example_text(**{"install =": 'install = ["nano; reboot"]'}), "isn't a package")
         self.refused(example_text(**{"stage3 =": 'stage3 = "latest"'}), "base.stage3")
         self.refused(example_text(**{"repository =": 'repository = "master"'}), "full commit id")
+
+    def test_the_package_server_is_checked(self):
+        self.refused(example_text(**{"server =": 'server = "http://x/$(id)/"'}), "must be an http(s) URL")
+        self.refused(example_text(**{"server =": 'server = "http://10.0.2.2:8080"'}), "must be an http(s) URL")
+        self.refused(example_text(**{"key =": 'key = "../../.ssh/id.asc"'}), "path beside the recipe")
+        self.refused(example_text(**{"key =": 'key = "keys/bad.asc"'}), "not an armored OpenPGP public key")
+        self.refused(example_text(**{"key =": 'key = ""'}), "server and key go together")
 
 
 class Fixes(unittest.TestCase):
@@ -130,10 +141,10 @@ class Steps(unittest.TestCase):
         reversed_ = dataclasses.replace(r, package_use=dict(reversed(list(r.package_use.items()))))
         self.assertEqual(steps.portage(r).script, steps.portage(reversed_).script)
 
-    def test_the_installer_is_the_last_step(self):
+    def test_the_installer_is_the_last_step_but_updates(self):
         for name in ("example", "gnome", "openrc"):
             with self.subTest(name):
-                last = steps.all_steps(recipe.load(RECIPES / f"{name}.toml"))[-1]
+                last = [s for s in steps.all_steps(recipe.load(RECIPES / f"{name}.toml")) if s.name != "updates"][-1]
                 self.assertEqual(last.name, "installer")
                 self.assertIn("/usr/sbin/lfsbuilder-install", last.script)
                 self.assertEqual("systemctl enable lfsbuilder-autoinstall" in last.script, name != "openrc")
@@ -142,6 +153,19 @@ class Steps(unittest.TestCase):
         script = steps.installer(recipe.load(RECIPES / "example.toml")).script
         self.assertIn(steps.INSTALLER.read_text().rstrip(), script)
         self.assertNotIn("LFSBUILDER_EOF", steps.INSTALLER.read_text())
+
+    def test_updates_come_last_and_change_no_other_step(self):
+        r = recipe.load(RECIPES / "example.toml")
+        with_updates = runner.plan(steps.all_steps(r), "seed")
+        without = runner.plan(steps.all_steps(dataclasses.replace(r, binhost="", binhost_key="")), "seed")
+        self.assertEqual(with_updates[-1].step.name, "updates")
+        self.assertEqual([p.fingerprint for p in with_updates[:-1]], [p.fingerprint for p in without])
+        script = with_updates[-1].step.script
+        self.assertIn(f"sync-uri = http://10.0.2.2:8080/{r.binary_set}/", script)
+        self.assertIn("verify-signature = true", script)
+        self.assertIn(steps.TRUST.read_text().rstrip(), script)
+        self.assertIn(r.binhost_key_text().rstrip(), script)
+        self.assertNotIn("LFSBUILDER_EOF", steps.TRUST.read_text())
 
     def test_fingerprints(self):
         r = recipe.load(RECIPES / "example.toml")

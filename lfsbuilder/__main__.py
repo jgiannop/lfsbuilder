@@ -9,6 +9,9 @@
                      boot --console RECIPE   ... and stay in its console to log in (Ctrl-A X quits)
     python3 -m lfsbuilder iso RECIPE       a live ISO of the built system (BIOS and UEFI), booted in QEMU
     python3 -m lfsbuilder password         a password hash for the recipe's [users]
+    python3 -m lfsbuilder signing-key      the distribution's package signing key (once), for [updates]
+    python3 -m lfsbuilder publish RECIPE   the packages its builds compiled, signed, for the package server
+    python3 -m lfsbuilder serve            serve the published packages over HTTP (127.0.0.1:8080; QEMU: 10.0.2.2)
     python3 -m lfsbuilder clean [--yes]    remove checkpoints no recipe in recipes/ uses (lists them without --yes)
 """
 
@@ -16,17 +19,18 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import hashlib
 import subprocess
 import sys
 from pathlib import Path
 
-from . import check as checks, fixes, gentoo, image, recipe as recipes, repair, runner, steps
+from . import binhost, check as checks, fixes, gentoo, image, recipe as recipes, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
 GENTOO = WORK / "gentoo"  # keys/, stage3/, repos/: what recipes pin, kept
 TOOLS_IMAGE = "lfsbuilder-host:dev"
+BINHOST = WORK / "binhost"  # gnupg/: the package signing key (private: back it up); www/: what serve serves
+PUBLIC_KEY = ROOT / "recipes" / "keys" / "binhost.asc"
 
 
 def tools() -> gentoo.Tools:
@@ -84,8 +88,7 @@ def plan(r: recipes.Recipe) -> int:
 def shared(r: recipes.Recipe) -> runner.Shared:
     # Binary packages are kept apart for each CPU level and compiler flags:
     # a package built for one would be wrong for another.
-    flags = hashlib.sha256(f"{r.cpu} {r.cflags}".encode()).hexdigest()[:12]
-    return runner.Shared(repository_path(r), "lfsbuilder-distfiles", f"lfsbuilder-binpkgs-{r.cpu}-{flags}", r.jobs)
+    return runner.Shared(repository_path(r), "lfsbuilder-distfiles", f"lfsbuilder-binpkgs-{r.binary_set}", r.jobs)
 
 
 def check(r: recipes.Recipe) -> int:
@@ -250,6 +253,38 @@ def password() -> int:
     return 0
 
 
+def signing_key(name: str) -> int:
+    try:
+        fpr = binhost.signing_key(tools(), BINHOST / "gnupg", PUBLIC_KEY, name)
+    except binhost.BinhostError as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(f"made the package signing key {fpr}\n"
+          f"  private: {(BINHOST / 'gnupg').relative_to(ROOT)} (no passphrase; never in git; back it up: without it,\n"
+          f"           installed systems can't take new packages until they get a new key in an update)\n"
+          f"  public:  {PUBLIC_KEY.relative_to(ROOT)}, for a recipe's [updates]:\n\n"
+          f"[updates]\nserver = \"http://10.0.2.2:8080/\"   # QEMU's address of this machine; a real server's URL later\n"
+          f"key = \"{PUBLIC_KEY.relative_to(ROOT / 'recipes')}\"")
+    return 0
+
+
+def publish(r: recipes.Recipe) -> int:
+    p = planned(r)
+    if p is None:
+        return 1
+    if not runner.image_exists(p[0].image):
+        print(f"nothing built yet: python3 -m lfsbuilder build {r.path}", file=sys.stderr)
+        return 1
+    try:
+        count = binhost.publish(tools(), r, p[0].image, shared(r).binpkgs, BINHOST / "gnupg", BINHOST / "www")
+    except binhost.BinhostError as error:
+        print(error, file=sys.stderr)
+        return 1
+    print(f"published {count} packages, signed, in {(BINHOST / 'www' / r.binary_set).relative_to(ROOT)}; "
+          f"systems of {r.path.name} fetch them from {r.binhost}{r.binary_set}/")
+    return 0
+
+
 def boot(r: recipes.Recipe, console: bool = False) -> int:
     p = planned(r)
     if p is None:
@@ -283,8 +318,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lfsbuilder")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("password")
+    sub.add_parser("signing-key").add_argument("--name", default="lfsbuilder", help="whose packages, in the key's name (the distribution's)")
+    serve = sub.add_parser("serve")
+    serve.add_argument("--bind", default="127.0.0.1", help="the address to listen on (0.0.0.0: every network the machine is on)")
+    serve.add_argument("--port", type=int, default=8080)
     sub.add_parser("clean").add_argument("--yes", action="store_true", help="remove them (without it, only list)")
-    for name in ("prepare", "plan", "check", "build", "boot", "iso"):
+    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish"):
         command = sub.add_parser(name)
         command.add_argument("recipe", type=Path)
         if name == "boot":
@@ -298,6 +337,12 @@ def main(argv: list[str] | None = None) -> int:
         return password()
     if args.command == "clean":
         return clean(args.yes)
+    if args.command == "signing-key":
+        return signing_key(args.name)
+    if args.command == "serve":
+        (BINHOST / "www").mkdir(parents=True, exist_ok=True)
+        binhost.serve(BINHOST / "www", args.bind, args.port)
+        return 0
     try:
         r = recipes.load(args.recipe)
     except recipes.RecipeError as error:
@@ -311,6 +356,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(r)
     if args.command == "iso":
         return iso(r)
+    if args.command == "publish":
+        return publish(r)
     if args.command == "boot":
         return boot(r, args.console)
     return build(r, args.until, args.repair)

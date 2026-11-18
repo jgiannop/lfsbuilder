@@ -8,6 +8,7 @@ Gentoo repository, and says how the system is configured and what is on it.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import re
 import tomllib
@@ -54,11 +55,23 @@ class Recipe:
     sudo: bool
     accounts: list[Account]
     services: list[str]
+    binhost: str = ""      # [updates] server: the base URL of the distribution's binary package server
+    binhost_key: str = ""  # [updates] key: its signing key (public), a file beside the recipe
     fixes: list = dataclasses.field(default_factory=list)  # fixes.Fix, from <name>.fixes.toml beside the recipe
 
     @property
     def stem(self) -> str:
         return self.path.stem
+
+    @property
+    def binary_set(self) -> str:
+        """The name of this recipe's set of binary packages: packages built
+        for one CPU level and compiler flags are wrong for others, so each
+        combination has its own (a Docker volume, a directory on the server)."""
+        return f"{self.cpu}-{hashlib.sha256(f'{self.cpu} {self.cflags}'.encode()).hexdigest()[:12]}"
+
+    def binhost_key_text(self) -> str:
+        return (self.path.parent / self.binhost_key).read_text(encoding="ascii")
 
 
 INITS = ("systemd", "openrc")
@@ -79,6 +92,10 @@ _KEYMAP = re.compile(r"^[A-Za-z0-9_-]+$")
 _SERVICE = re.compile(r"^[A-Za-z0-9@._-]+$")
 _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FULL_NAME = re.compile(r"^[^:,\n]*$")
+_URL = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*/$")
+_KEY_PATH = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.asc$")
+# An armored public key and nothing else: it goes into a script between heredoc markers.
+_PUBLIC_KEY = re.compile(r"^-----BEGIN PGP PUBLIC KEY BLOCK-----\n(\n|[A-Za-z0-9+/=: .-]*\n)+-----END PGP PUBLIC KEY BLOCK-----\n?$")
 _HASH = re.compile(r"^\$(6|5|y|2[aby])\$[./A-Za-z0-9$]{8,}$")  # sha512, sha256, yescrypt, bcrypt
 
 
@@ -94,8 +111,8 @@ def load(path: Path) -> Recipe:
             raise RecipeError(f"[{name}] must be a table")
         return value
 
-    dist, base, use, packages, system, network, output, users, services = (
-        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users", "services")
+    dist, base, use, packages, system, network, output, users, services, updates = (
+        section(n) for n in ("distribution", "base", "use", "packages", "system", "network", "output", "users", "services", "updates")
     )
     problems: list[str] = []
 
@@ -132,6 +149,8 @@ def load(path: Path) -> Recipe:
         sudo=bool(users.get("sudo", True)),
         accounts=[],
         services=strings(services.get("enable", []), "services.enable"),
+        binhost=str(updates.get("server", "")),
+        binhost_key=str(updates.get("key", "")),
     )
     recipe.network.setdefault("manager", "networkd" if recipe.init == "systemd" else "netifrc")
     raw_accounts = users.get("accounts", [])
@@ -213,6 +232,21 @@ def load(path: Path) -> Recipe:
                 problems.append(f"users.accounts {a.name!r}: {g!r} isn't a group name")
         if a.password and not _HASH.match(a.password):
             problems.append(f"users.accounts {a.name!r}: password must be a password hash (python3 -m lfsbuilder password), not a password")
+    if bool(recipe.binhost) != bool(recipe.binhost_key):
+        problems.append("updates: server and key go together (python3 -m lfsbuilder signing-key makes the key)")
+    elif recipe.binhost:
+        if not _URL.match(recipe.binhost):
+            problems.append(f"updates.server {recipe.binhost!r} must be an http(s) URL ending in /, like \"http://10.0.2.2:8080/\"")
+        if not _KEY_PATH.match(recipe.binhost_key) or ".." in recipe.binhost_key.split("/"):
+            problems.append(f"updates.key {recipe.binhost_key!r} must be a path beside the recipe, like \"keys/binhost.asc\"")
+        else:
+            try:
+                text = recipe.binhost_key_text()
+            except (OSError, UnicodeError) as error:
+                problems.append(f"updates.key: {error}")
+            else:
+                if not _PUBLIC_KEY.match(text):
+                    problems.append(f"updates.key {recipe.binhost_key}: not an armored OpenPGP public key")
     if problems:
         raise RecipeError(f"{path}:\n  " + "\n  ".join(problems))
     from . import fixes  # (fixes doesn't import recipe; this keeps the two apart)
@@ -281,6 +315,8 @@ def dump(r: Recipe) -> str:
     for a in r.accounts:
         out += ["", "[[users.accounts]]", f"name = {_s(a.name)}", f"full_name = {_s(a.full_name)}",
                 f"groups = {_list(a.groups)}", f"password = {_s(a.password)}"]
+    if r.binhost:
+        out += ["", "[updates]", f"server = {_s(r.binhost)}", f"key = {_s(r.binhost_key)}"]
     out += ["", "[output]"]
     out += [f"{key} = {value if isinstance(value, int) else _s(str(value))}" for key, value in r.output.items()]
     return "\n".join(out) + "\n"

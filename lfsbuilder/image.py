@@ -28,6 +28,10 @@ from pathlib import Path
 from .recipe import Recipe
 
 DOCKER_FILES = {"etc/hostname", "etc/hosts", "etc/resolv.conf", "etc/fstab", ".dockerenv"}
+# Left out of every exported system: getuto's keyring holds a private key
+# (its local trust anchor) that each installed system makes for itself, at
+# its first binary package download, rather than all sharing the build's.
+LEFT_OUT = ("etc/portage/gnupg",)
 KERNEL = re.compile(r"^boot/((?:vmlinuz|kernel)-[^/]+)$")  # installkernel names it kernel-<version> now
 INITRAMFS = re.compile(r"^boot/(initramfs-[^/]+\.img)$")
 
@@ -63,7 +67,7 @@ def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False) 
         with tarfile.open(fileobj=source.stdout, mode="r|") as tin, tarfile.open(part, "w", format=tarfile.PAX_FORMAT) as tout:
             for member in tin:
                 name = member.name.removeprefix("./")
-                if name in DOCKER_FILES:
+                if name in DOCKER_FILES or any(name == d or name.startswith(d + "/") for d in LEFT_OUT):
                     continue
                 data = tin.extractfile(member) if member.isreg() else None
                 if member.isreg() and (KERNEL.match(name) or INITRAMFS.match(name)):
@@ -116,6 +120,7 @@ def live_initramfs(image: str, shared_args: list[str], kernel_version: str, out:
     out.parent.mkdir(parents=True, exist_ok=True)
     script = (
         "set -e\n"
+        "rm -f /etc/portage/binrepos.conf/lfsbuilder.conf\n"  # the distribution's server needn't be up for this
         "emerge --oneshot --quiet sys-fs/lvm2\n"
         f"dracut --no-hostonly --add dmsquash-live --force /out/{out.name} {kernel_version}\n"
         f"chown {os.getuid()}:{os.getgid()} /out/{out.name}\n"

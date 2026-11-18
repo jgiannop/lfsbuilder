@@ -16,6 +16,9 @@ disk and the boot loader):
   installer   GRUB (BIOS and UEFI), the disk tools, and lfsbuilder-install,
               which puts the live system (iso) on a disk; last, so adding it
               changed no other step's checkpoint
+  updates     only with [updates]: the distribution's own binary package
+              server and its signing key, which the system trusts for
+              packages from it (lfsbuilder-trust); last for the same reason
 
 /etc/hostname and /etc/hosts are not written here: Docker mounts its own
 over them in every container, so they are written when the system is
@@ -213,6 +216,25 @@ def installer(r: Recipe) -> Step:
     return Step("installer", "GRUB, disk tools and the installer", script)
 
 
+TRUST = Path(__file__).with_name("trust.sh")
+BINHOST_KEY = "/usr/share/openpgp-keys/lfsbuilder-binhost.asc"
+
+
+def updates(r: Recipe) -> Step:
+    """The distribution's binary package server (python3 -m lfsbuilder
+    publish/serve) as a second source of binary packages beside Gentoo's,
+    for this recipe's set of them. Its packages must be signed with the
+    recipe's key: lfsbuilder-trust, Portage's trust helper here, adds that
+    key to the keyring getuto keeps, trusted the way getuto trusts Gentoo's."""
+    script = "set -e\n"
+    script += _file(BINHOST_KEY, r.binhost_key_text())
+    script += _file("/usr/sbin/lfsbuilder-trust", TRUST.read_text()) + "chmod 0755 /usr/sbin/lfsbuilder-trust\n"
+    script += "grep -q '^PORTAGE_TRUST_HELPER=' /etc/portage/make.conf || echo 'PORTAGE_TRUST_HELPER=\"/usr/sbin/lfsbuilder-trust\"' >> /etc/portage/make.conf\n"
+    script += _file("/etc/portage/binrepos.conf/lfsbuilder.conf",
+                    f"[lfsbuilder]\npriority = 2\nsync-uri = {r.binhost}{r.binary_set}/\nverify-signature = true\n")
+    return Step("updates", f"Updates from {r.binhost}", script)
+
+
 def services(r: Recipe) -> Step | None:
     """The services to start at boot: the recipe's, and what its choices
     bring (NetworkManager). After the packages, since a service exists only
@@ -239,7 +261,7 @@ def all_steps(r: Recipe) -> list[Step]:
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
     steps = [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages),
-             *([enabled] if enabled else []), users(r), installer(r)]
+             *([enabled] if enabled else []), users(r), installer(r), *([updates(r)] if r.binhost else [])]
     # Each fix goes in at the start of the step it was found in (fixes.py).
     names = {s.name for s in steps}
     for fix in r.fixes:

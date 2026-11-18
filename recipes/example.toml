@@ -52,6 +52,12 @@ groups = ["wheel", "audio", "video", "users"]
 # `python3 -m lfsbuilder password`; a recipe never holds a password itself.
 password = "$6$woOKfvYyg2qIitmP$uwQTom.5BvfCc80CZEQjS6ju6fOVms4TIY7fDqwNuLmUaCL81QIy8pimI6SZ10XYd6kghXygCXG4yeCkIWLPz."
 
+[updates]
+# The distribution's own binary package server (python3 -m lfsbuilder publish,
+# then serve): the system takes packages from it only signed with this key.
+server = "http://10.0.2.2:8080/"  # QEMU's address of the machine running `serve`
+key = "keys/binhost.asc"          # from python3 -m lfsbuilder signing-key
+
 [output]
 format = "qemu"                  # a disk image to boot in QEMU (later: "iso", "rootfs", "docker")
 size_gb = 12
