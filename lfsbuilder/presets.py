@@ -35,10 +35,13 @@ DESKTOPS = (
         manager="networkmanager",
         package_use=(("net-libs/ngtcp2", ("gnutls",)),),  # Gentoo's binary samba was built against it
     ),
-    Desktop("plasma", "KDE Plasma", False, "default/linux/amd64/23.0/desktop/plasma/systemd",
-            packages=("kde-plasma/plasma-meta",), services=("sddm",), manager="networkmanager"),
-    Desktop("xfce", "Xfce", False, "default/linux/amd64/23.0/desktop/systemd",
-            packages=("xfce-base/xfce4-meta", "x11-misc/lightdm"), services=("lightdm",), manager="networkmanager"),
+    Desktop("plasma", "KDE Plasma", True, "default/linux/amd64/23.0/desktop/plasma/systemd",
+            packages=("kde-plasma/plasma-meta", "kde-apps/konsole", "kde-apps/dolphin"),
+            services=("sddm",), manager="networkmanager"),
+    Desktop("xfce", "Xfce", True, "default/linux/amd64/23.0/desktop/systemd",
+            packages=("x11-base/xorg-server", "xfce-base/xfce4-meta", "x11-misc/lightdm", "x11-misc/lightdm-gtk-greeter"),
+            services=("lightdm",), manager="networkmanager",
+            package_use=(("dev-libs/libdbusmenu", ("gtk3",)),)),  # Xfce's panel needs it (found by check)
 )
 
 

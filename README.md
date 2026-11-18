@@ -6,7 +6,7 @@ A **recipe** (a TOML file, written by hand or by the form) says what the system 
 
 When a step fails, `build --repair` looks for a fix: dependency problems are solved by asking Portage itself (`check`), anything else by Claude (through Claude Code, with no tools: it only reads the failing command and the end of the logs, and answers with a USE flag, a keyword, a build setting or a patch, which lfsbuilder checks before using). Fixes are saved beside the recipe, so the next build doesn't need Claude.
 
-**Status:** early. Recipes build and boot in QEMU (a small systemd system, an OpenRC server with a static address, a GNOME desktop); the form and the repair agent have first versions. Next: the distribution itself (a binary package server, an ISO with an installer, branding). The first version, built on Linux From Scratch, is on the `lfs` branch.
+**Status:** early. Recipes build and boot in QEMU (a small systemd system, an OpenRC server with a static address, a GNOME desktop) and become live ISOs that boot on BIOS and UEFI; the form and the repair agent have first versions. Next: an installer on the ISO, a binary package server, branding. The first version, built on Linux From Scratch, is on the `lfs` branch.
 
 ```bash
 docker build -t lfsbuilder-host:dev -f docker/host.Dockerfile docker
@@ -15,6 +15,7 @@ python3 -m lfsbuilder check recipes/example.toml     # ask Portage first: USE ch
 python3 -m lfsbuilder build recipes/example.toml     # run the steps in Docker, a checkpoint after each (--repair: fix failures)
 python3 -m lfsbuilder boot recipes/example.toml      # a disk image, booted in QEMU, with a picture of its screen
 python3 -m lfsbuilder boot --console recipes/example.toml   # ... and log in (user demo, password demo; Ctrl-A X quits)
+python3 -m lfsbuilder iso recipes/example.toml       # a live ISO (BIOS and UEFI), boot-tested in QEMU
 python3 -m lfsbuilder password                       # a password hash for a recipe's [users]
 python3 -m lfsbuilder clean                          # old checkpoints no recipe uses (--yes removes them)
 ```

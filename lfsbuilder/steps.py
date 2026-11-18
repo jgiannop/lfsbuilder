@@ -13,6 +13,9 @@ disk and the boot loader):
   <package>   each package of the recipe, one step each, in its order
   services    the services to start at boot (the recipe's, NetworkManager)
   users       root's password, the accounts, sudo for "wheel"
+  installer   GRUB (BIOS and UEFI), the disk tools, and lfsbuilder-install,
+              which puts the live system (iso) on a disk; last, so adding it
+              changed no other step's checkpoint
 
 /etc/hostname and /etc/hosts are not written here: Docker mounts its own
 over them in every container, so they are written when the system is
@@ -23,9 +26,12 @@ from __future__ import annotations
 
 import dataclasses
 import shlex
+from pathlib import Path
 
 from . import fixes as fixes_
 from .recipe import Recipe
+
+EMERGE_OPTS = "--usepkg --binpkg-respect-use=y --with-bdeps=y"  # the build adds --jobs (runner.Shared)
 
 BINHOST = "https://distfiles.gentoo.org/releases/amd64/binpackages/23.0/{cpu}/"
 
@@ -62,7 +68,7 @@ def make_conf(r: Recipe) -> str:
         f'USE="{" ".join(r.use)}"',
         f'FEATURES="{" ".join(features)}"',
         'ACCEPT_LICENSE="-* @FREE @BINARY-REDISTRIBUTABLE"',
-        'EMERGE_DEFAULT_OPTS="--usepkg --binpkg-respect-use=y --with-bdeps=y"',
+        f'EMERGE_DEFAULT_OPTS="{EMERGE_OPTS}"',
         'LC_MESSAGES=C.UTF-8',
     ]
     return "\n".join(lines) + "\n"
@@ -174,6 +180,39 @@ def users(r: Recipe) -> Step:
     return Step("users", "Root's password, the accounts, sudo", script)
 
 
+INSTALLER = Path(__file__).with_name("installer.sh")
+
+AUTOINSTALL_UNIT = """[Unit]
+Description=lfsbuilder automatic install (lfsbuilder.autoinstall=DISK on the kernel command line)
+ConditionKernelCommandLine=lfsbuilder.autoinstall
+After=local-fs.target systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/lfsbuilder-install --auto
+ExecStartPost=/usr/bin/systemctl poweroff
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def installer(r: Recipe) -> Step:
+    """GRUB for both kinds of PC, the disk tools, the installer; and on systemd
+    a service that installs by itself when the kernel command line says
+    lfsbuilder.autoinstall=DISK (for automatic installs and the install test)."""
+    script = "set -e\n"
+    script += "grep -q '^GRUB_PLATFORMS=' /etc/portage/make.conf || echo 'GRUB_PLATFORMS=\"efi-64 pc\"' >> /etc/portage/make.conf\n"
+    script += "emerge --noreplace --verbose sys-boot/grub sys-apps/gptfdisk sys-fs/dosfstools\n"
+    script += _file("/usr/sbin/lfsbuilder-install", INSTALLER.read_text()) + "chmod 0755 /usr/sbin/lfsbuilder-install\n"
+    if r.init == "systemd":
+        script += _file("/etc/systemd/system/lfsbuilder-autoinstall.service", AUTOINSTALL_UNIT)
+        script += "systemctl enable lfsbuilder-autoinstall.service\n"
+    return Step("installer", "GRUB, disk tools and the installer", script)
+
+
 def services(r: Recipe) -> Step | None:
     """The services to start at boot: the recipe's, and what its choices
     bring (NetworkManager). After the packages, since a service exists only
@@ -200,7 +239,7 @@ def all_steps(r: Recipe) -> list[Step]:
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
     steps = [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages),
-             *([enabled] if enabled else []), users(r)]
+             *([enabled] if enabled else []), users(r), installer(r)]
     # Each fix goes in at the start of the step it was found in (fixes.py).
     names = {s.name for s in steps}
     for fix in r.fixes:

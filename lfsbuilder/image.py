@@ -32,14 +32,16 @@ KERNEL = re.compile(r"^boot/((?:vmlinuz|kernel)-[^/]+)$")  # installkernel names
 INITRAMFS = re.compile(r"^boot/(initramfs-[^/]+\.img)$")
 
 
-def system_files(r: Recipe) -> dict[str, tuple[str, str]]:
+def system_files(r: Recipe, live: bool = False) -> dict[str, tuple[str, str]]:
     """What the exported system gets in place of Docker's files: path ->
-    (kind, content); kind "file" or "link"."""
+    (kind, content); kind "file" or "link". A live system's root is mounted
+    by its initramfs, so its fstab has nothing to mount."""
     fqdn = f"{r.hostname}.{r.domain}"
+    root = "" if live else f"/dev/vda  /  {r.output.get('filesystem', 'ext4')}  defaults  0 1\n"
     files = {
         "etc/hostname": ("file", f"{r.hostname}\n"),
         "etc/hosts": ("file", f"127.0.0.1  localhost\n::1        localhost\n127.0.1.1  {fqdn} {r.hostname}\n"),
-        "etc/fstab": ("file", f"# Written by lfsbuilder\n/dev/vda  /  {r.output.get('filesystem', 'ext4')}  defaults  0 1\n"),
+        "etc/fstab": ("file", f"# Written by lfsbuilder\n{root}"),
     }
     if r.init == "systemd":
         files["etc/resolv.conf"] = ("link", "../run/systemd/resolve/stub-resolv.conf")
@@ -48,12 +50,12 @@ def system_files(r: Recipe) -> dict[str, tuple[str, str]]:
     return files
 
 
-def export(image: str, r: Recipe, rootfs: Path, boot: Path) -> tuple[Path, Path]:
+def export(image: str, r: Recipe, rootfs: Path, boot: Path, live: bool = False) -> tuple[Path, Path]:
     """The system of `image` as `rootfs` (a tar), its kernel and initramfs
     copied to `boot`. Returns their paths."""
     boot.mkdir(parents=True, exist_ok=True)
     kernel = initramfs = None
-    replaced = system_files(r)
+    replaced = system_files(r, live)
     container = subprocess.run(["docker", "create", image, "/bin/true"], check=True, text=True, capture_output=True).stdout.strip()
     part = rootfs.with_name(rootfs.name + ".part")
     try:
@@ -100,12 +102,71 @@ def disk(tools, rootfs: Path, out: Path, size_gb: int) -> None:
               "sh", tools.inside(out), tools.inside(rootfs))
 
 
+def volume_id(r: Recipe) -> str:
+    """The ISO's label, by which the live initramfs finds it (CDLABEL=)."""
+    return (re.sub(r"[^A-Z0-9]+", "_", f"{r.name} {r.version}".upper()).strip("_") or "LIVE")[:32]
+
+
+def live_initramfs(image: str, shared_args: list[str], kernel_version: str, out: Path) -> None:
+    """An initramfs that boots the live system: dracut with dmsquash-live
+    (which finds the ISO by its label, mounts the SquashFS and puts a
+    writable overlay in memory over it). Made in a throwaway container of
+    the last checkpoint, where device-mapper's tools (which dmsquash-live
+    needs) are installed only for this; the system itself doesn't get them."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "set -e\n"
+        "emerge --oneshot --quiet sys-fs/lvm2\n"
+        f"dracut --no-hostonly --add dmsquash-live --force /out/{out.name} {kernel_version}\n"
+        f"chown {os.getuid()}:{os.getgid()} /out/{out.name}\n"
+    )
+    result = subprocess.run(["docker", "run", "--rm", *shared_args, "-v", f"{out.parent}:/out", image, "bash", "-lc", script],
+                            text=True, capture_output=True)
+    if result.returncode or not out.exists():
+        raise RuntimeError("making the live initramfs failed:\n" + "\n".join((result.stdout + result.stderr).splitlines()[-30:]))
+
+
+GRUB_CFG = """# Written by lfsbuilder
+set timeout=5
+set default=0
+serial --unit=0 --speed=115200
+terminal_input console serial
+terminal_output console serial
+insmod all_video
+
+menuentry "{title} (live)" {{
+    linux /boot/vmlinuz root=live:CDLABEL={volume} rd.live.image rd.overlay console=tty0 console=ttyS0,115200
+    initrd /boot/initramfs.img
+}}
+"""
+
+
+def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Path, r: Recipe) -> None:
+    """A live ISO that boots on BIOS and UEFI PCs: the system as a SquashFS
+    (sqfstar reads the tar, so the owners come from it, without root), the
+    kernel and live initramfs, and GRUB, put together by grub-mkrescue."""
+    tree = work / "iso"
+    subprocess.run(["rm", "-rf", str(tree)], check=True)
+    (tree / "boot" / "grub").mkdir(parents=True)
+    (tree / "LiveOS").mkdir()
+    (tree / "boot" / "vmlinuz").write_bytes(kernel.read_bytes())
+    (tree / "boot" / "initramfs.img").write_bytes(initramfs.read_bytes())
+    volume = volume_id(r)
+    (tree / "boot" / "grub" / "grub.cfg").write_text(GRUB_CFG.format(title=f"{r.name} {r.version}", volume=volume))
+    tools.run("sh", "-c", 'sqfstar -quiet -no-progress -comp zstd "$1" < "$2"', "sh",
+              tools.inside(tree / "LiveOS" / "squashfs.img"), tools.inside(rootfs))
+    out.unlink(missing_ok=True)
+    tools.run("grub-mkrescue", "--quiet", "-o", tools.inside(out), tools.inside(tree), "--", "-volid", volume, capture=True)
+    subprocess.run(["rm", "-rf", str(tree)], check=True)
+
+
+OVMF = Path("/usr/share/ovmf/OVMF.fd")  # UEFI firmware for QEMU (Debian/Ubuntu's ovmf package)
 KVM_FAILED = b"KVM: entry failed"
 MEMORY_MB = 4096  # a desktop needs more than 2 GB
 
 
-def boot_test(kernel: Path, initramfs: Path, image: Path, log: Path, screenshot: Path,
-              timeout: int = 300, settle: int = 45) -> bool:
+def boot_test(kernel: Path | None, initramfs: Path | None, image: Path, log: Path, screenshot: Path,
+              timeout: int = 300, settle: int = 45, cdrom: bool = False, uefi: bool = False) -> bool:
     """Starts the disk in QEMU and waits for the login prompt on the serial
     console. True if it comes; the console's output is in `log`. Then, after
     `settle` seconds (a display manager starts after the serial login), a
@@ -116,30 +177,87 @@ def boot_test(kernel: Path, initramfs: Path, image: Path, log: Path, screenshot:
     holding the processor's VT-x), the test runs again without KVM: slower,
     but the answer is the same."""
     if os.access("/dev/kvm", os.R_OK | os.W_OK):
-        result = _boot(kernel, initramfs, image, log, screenshot, timeout, settle, kvm=True)
+        result = _boot(kernel, initramfs, image, log, screenshot, timeout, settle, kvm=True, cdrom=cdrom, uefi=uefi)
         if result is not None:
             return result
         print("KVM can't start the virtual machine (is VirtualBox or another hypervisor running?);"
               " trying again without KVM, which is slower", flush=True)
-    return bool(_boot(kernel, initramfs, image, log, screenshot, timeout * 5, settle * 5, kvm=False))
+    return bool(_boot(kernel, initramfs, image, log, screenshot, timeout * 5, settle * 5, kvm=False, cdrom=cdrom, uefi=uefi))
 
 
-def qemu_command(kernel: Path, initramfs: Path, image: Path, kvm: bool, monitor: Path | None = None) -> list[str]:
+def qemu_command(kernel: Path | None, initramfs: Path | None, image: Path, kvm: bool, monitor: Path | None = None,
+                 cdrom: bool = False, uefi: bool = False) -> list[str]:
     """With `monitor`, a virtual graphics card (no window) and QEMU's monitor
-    on that socket, for screenshots; without, the serial console only."""
+    on that socket, for screenshots; without, the serial console only. With
+    `cdrom`, `image` is an ISO started as a PC would (its own boot loader);
+    without a kernel, `image` is a disk started the same way (an installed
+    system, with its GRUB)."""
     screen = (["-display", "none", "-vga", "virtio", "-serial", "stdio", "-monitor", f"unix:{monitor},server,nowait"]
               if monitor else ["-nographic"])
+    if cdrom:
+        boot = ["-cdrom", str(image), "-boot", "d"]
+    elif kernel is None:
+        boot = ["-drive", f"file={image},format=raw,if=virtio"]
+    else:
+        boot = ["-kernel", str(kernel), "-initrd", str(initramfs),
+                # The last console= is /dev/console (systemd's messages); the screen gets the kernel's too.
+                # net.ifnames=0: the network card is eth0, as a recipe's static settings name it (the
+                # installer will have to deal with names on real hardware).
+                "-append", "root=/dev/vda rw console=tty0 console=ttyS0 net.ifnames=0 panic=-1",
+                "-drive", f"file={image},format=raw,if=virtio"]
     return [
         "qemu-system-x86_64", "-m", str(MEMORY_MB), "-smp", "2", "-no-reboot", *screen,
         *(["-enable-kvm", "-cpu", "host"] if kvm else []),
-        "-kernel", str(kernel), "-initrd", str(initramfs),
-        # The last console= is /dev/console (systemd's messages); the screen gets the kernel's too.
-        # net.ifnames=0: the network card is eth0, as a recipe's static settings name it (the
-        # installer will have to deal with names on real hardware).
-        "-append", "root=/dev/vda rw console=tty0 console=ttyS0 net.ifnames=0 panic=-1",
-        "-drive", f"file={image},format=raw,if=virtio",
+        *(["-bios", str(OVMF)] if uefi else []),
+        *boot,
         "-nic", "user,model=virtio-net-pci",
     ]
+
+
+def install_test(kernel: Path, initramfs: Path, iso: Path, volume: str, disk: Path, log: Path, timeout: int = 1800) -> bool:
+    """The live system started from `iso` with an empty `disk` and
+    lfsbuilder.autoinstall on its command line: it installs itself on the
+    disk and powers off. True if the installer said it was done."""
+    disk.unlink(missing_ok=True)
+    with disk.open("wb") as f:
+        f.truncate(20 * 2**30)  # sparse
+    kvm = os.access("/dev/kvm", os.R_OK | os.W_OK)
+    command = [
+        "qemu-system-x86_64", "-m", str(MEMORY_MB), "-smp", "2", "-no-reboot", "-nographic",
+        *(["-enable-kvm", "-cpu", "host"] if kvm else []),
+        "-kernel", str(kernel), "-initrd", str(initramfs),
+        "-append", f"root=live:CDLABEL={volume} rd.live.image rd.overlay console=tty0 console=ttyS0,115200 "
+                   "lfsbuilder.autoinstall=/dev/vda",
+        "-cdrom", str(iso), "-drive", f"file={disk},format=raw,if=virtio",
+        "-nic", "user,model=virtio-net-pci",
+    ]
+    limit = timeout if kvm else timeout * 5
+    started, seen = time.monotonic(), b""
+    with log.open("wb") as out:
+        qemu = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        selector = selectors.DefaultSelector()
+        selector.register(qemu.stdout, selectors.EVENT_READ)
+        try:
+            while time.monotonic() - started < limit:
+                if not selector.select(timeout=2):
+                    continue
+                chunk = os.read(qemu.stdout.fileno(), 65536)
+                if not chunk:
+                    break  # powered off, after the install (or a panic)
+                out.write(chunk)
+                seen = (seen + chunk)[-8192:]
+                if any(sign in seen for sign in INSTALL_FAILED):
+                    return False  # no need to wait out the timeout
+        finally:
+            qemu.kill()
+            qemu.wait()
+    return b"==> Done:" in log.read_bytes()
+
+
+# What the console shows when the automatic install fails: the installer's
+# own message, or systemd's for its service.
+INSTALL_FAILED = (b"lfsbuilder-install: ", b"Failed to start lfsbuilder automatic install",
+                  b"lfsbuilder-autoinstall.service: Failed", b"Kernel panic")
 
 
 def console(kernel: Path, initramfs: Path, image: Path) -> None:
@@ -148,12 +266,12 @@ def console(kernel: Path, initramfs: Path, image: Path) -> None:
     os.execvp("qemu-system-x86_64", qemu_command(kernel, initramfs, image, kvm))
 
 
-def _boot(kernel: Path, initramfs: Path, image: Path, log: Path, screenshot: Path,
-          timeout: int, settle: int, kvm: bool) -> bool | None:
+def _boot(kernel: Path | None, initramfs: Path | None, image: Path, log: Path, screenshot: Path,
+          timeout: int, settle: int, kvm: bool, cdrom: bool = False, uefi: bool = False) -> bool | None:
     """One boot; None if KVM failed to run the machine at all."""
     monitor = log.with_name("qemu-monitor.sock")
     monitor.unlink(missing_ok=True)
-    command = qemu_command(kernel, initramfs, image, kvm, monitor)
+    command = qemu_command(kernel, initramfs, image, kvm, monitor, cdrom, uefi)
     seen = b""
     started = time.monotonic()
     logged_in_at = None

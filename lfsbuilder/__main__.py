@@ -7,6 +7,7 @@
                      build --repair RECIPE   ... and when a step fails, find a fix (check, then Claude) and retry
     python3 -m lfsbuilder boot RECIPE      export the built system to a disk image and boot it in QEMU
                      boot --console RECIPE   ... and stay in its console to log in (Ctrl-A X quits)
+    python3 -m lfsbuilder iso RECIPE       a live ISO of the built system (BIOS and UEFI), booted in QEMU
     python3 -m lfsbuilder password         a password hash for the recipe's [users]
     python3 -m lfsbuilder clean [--yes]    remove checkpoints no recipe in recipes/ uses (lists them without --yes)
 """
@@ -180,6 +181,60 @@ def clean(yes: bool) -> int:
     return 0
 
 
+def iso(r: recipes.Recipe) -> int:
+    p = planned(r)
+    if p is None:
+        return 1
+    missing = [s.step.name for s in p if not runner.image_exists(s.image)]
+    if missing:
+        print(f"the build isn't finished ({', '.join(missing)} still to do): python3 -m lfsbuilder build {r.path}", file=sys.stderr)
+        return 1
+    out = WORK / f"build-{r.stem}"
+    print(f"exporting {p[-1].image} as a live system", flush=True)
+    kernel, _ = image.export(p[-1].image, r, out / "rootfs.tar", out / "boot", live=True)
+    version = kernel.name.split("-", 1)[1]
+    print("making the live initramfs (dracut, dmsquash-live)", flush=True)
+    image.live_initramfs(p[-1].image, shared(r).args(), version, out / "boot" / "initramfs-live.img")
+    target = out / f"{r.stem}.iso"
+    print(f"making {target.relative_to(ROOT)} (SquashFS, GRUB for BIOS and UEFI)", flush=True)
+    image.iso(tools(), out / "rootfs.tar", kernel, out / "boot" / "initramfs-live.img", out, target, r)
+    (out / "rootfs.tar").unlink()
+    print(f"{target.relative_to(ROOT)}: {target.stat().st_size / 2**30:.1f} GB; booting it in QEMU", flush=True)
+    firmwares = ["bios", *(["uefi"] if image.OVMF.exists() else [])]
+    for firmware in firmwares:
+        log, screenshot = out / "logs" / f"boot-iso-{firmware}.log", out / f"screen-iso-{firmware}.png"
+        if image.boot_test(None, None, target, log, screenshot, timeout=600, cdrom=True, uefi=firmware == "uefi"):
+            print(f"{firmware.upper()}: it boots, the login prompt came (the screen in {screenshot.relative_to(ROOT)})", flush=True)
+            continue
+        print(f"{firmware.upper()}: no login prompt; the end of the console ({log}):", file=sys.stderr)
+        for line in log.read_text(errors="replace").splitlines()[-30:]:
+            print(f"  | {line}", file=sys.stderr)
+        return 1
+    if "uefi" not in firmwares:
+        print(f"(UEFI not tested: no {image.OVMF}; the ovmf package provides it)")
+    if r.init != "systemd":
+        print("(the install test needs systemd's automatic-install service; not run for OpenRC)")
+        return 0
+    print("installing it on an empty disk in QEMU (lfsbuilder-install, automatically)", flush=True)
+    installed, log = out / "installed.img", out / "logs" / "install.log"
+    if not image.install_test(kernel, out / "boot" / "initramfs-live.img", target, image.volume_id(r), installed, log):
+        print(f"the install didn't finish; the end of its console ({log}):", file=sys.stderr)
+        for line in log.read_text(errors="replace").splitlines()[-30:]:
+            print(f"  | {line}", file=sys.stderr)
+        return 1
+    for firmware in firmwares:
+        log, screenshot = out / "logs" / f"boot-installed-{firmware}.log", out / f"screen-installed-{firmware}.png"
+        if image.boot_test(None, None, installed, log, screenshot, uefi=firmware == "uefi"):
+            print(f"the installed disk boots with {firmware.upper()} (its own GRUB), the login prompt came", flush=True)
+            continue
+        print(f"the installed disk doesn't boot with {firmware.upper()}; the end of its console ({log}):", file=sys.stderr)
+        for line in log.read_text(errors="replace").splitlines()[-30:]:
+            print(f"  | {line}", file=sys.stderr)
+        return 1
+    installed.unlink()
+    return 0
+
+
 def password() -> int:
     """Asks for a password twice and prints its SHA-512 crypt hash, made by
     openssl in the tools image; the password goes in on its stdin, never on
@@ -229,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("password")
     sub.add_parser("clean").add_argument("--yes", action="store_true", help="remove them (without it, only list)")
-    for name in ("prepare", "plan", "check", "build", "boot"):
+    for name in ("prepare", "plan", "check", "build", "boot", "iso"):
         command = sub.add_parser(name)
         command.add_argument("recipe", type=Path)
         if name == "boot":
@@ -254,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         return plan(r)
     if args.command == "check":
         return check(r)
+    if args.command == "iso":
+        return iso(r)
     if args.command == "boot":
         return boot(r, args.console)
     return build(r, args.until, args.repair)

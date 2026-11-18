@@ -29,7 +29,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .steps import Step
+from .steps import EMERGE_OPTS, Step
 
 IMAGE = "lfsbuilder-build"  # every checkpoint is IMAGE:<fingerprint>
 CONTAINER = "lfsbuilder-step"  # + the step's fingerprint, so two builds at once never touch each other's container
@@ -68,6 +68,9 @@ class Shared:
             "-v", f"{self.distfiles}:/var/cache/distfiles",
             "-v", f"{self.binpkgs}:/var/cache/binpkgs",
             "-e", f"MAKEOPTS=-j{n} -l{n}",
+            # Several packages at once (binary packages are mostly unpacking), held back
+            # by the load; in the environment, so it isn't in make.conf or the fingerprints.
+            "-e", f"EMERGE_DEFAULT_OPTS={EMERGE_OPTS} --jobs={max(2, n // 2)} --load-average={n}",
         ]
 
 

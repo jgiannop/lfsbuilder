@@ -130,6 +130,19 @@ class Steps(unittest.TestCase):
         reversed_ = dataclasses.replace(r, package_use=dict(reversed(list(r.package_use.items()))))
         self.assertEqual(steps.portage(r).script, steps.portage(reversed_).script)
 
+    def test_the_installer_is_the_last_step(self):
+        for name in ("example", "gnome", "openrc"):
+            with self.subTest(name):
+                last = steps.all_steps(recipe.load(RECIPES / f"{name}.toml"))[-1]
+                self.assertEqual(last.name, "installer")
+                self.assertIn("/usr/sbin/lfsbuilder-install", last.script)
+                self.assertEqual("systemctl enable lfsbuilder-autoinstall" in last.script, name != "openrc")
+
+    def test_the_installer_script_reaches_the_image_whole(self):
+        script = steps.installer(recipe.load(RECIPES / "example.toml")).script
+        self.assertIn(steps.INSTALLER.read_text().rstrip(), script)
+        self.assertNotIn("LFSBUILDER_EOF", steps.INSTALLER.read_text())
+
     def test_fingerprints(self):
         r = recipe.load(RECIPES / "example.toml")
         a = runner.plan(steps.all_steps(r), "seed")
