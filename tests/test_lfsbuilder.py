@@ -682,6 +682,51 @@ class Customizations(unittest.TestCase):
         self.assertIn("--usepkg-exclude app-editors/nano", fixes.script([fix]))
 
 
+class DefaultSettings(unittest.TestCase):
+    """Settings the programs already have, made the distribution's defaults (no compiling)."""
+
+    CLOCK = recipe.Setting("gsettings", "clock-show-seconds", "true", schema="org.gnome.desktop.interface",
+                           about="Clock with seconds")
+    DARK = recipe.Setting("gsettings", "color-scheme", "'prefer-dark'", schema="org.gnome.desktop.interface")
+    BORDERS = recipe.Setting("kde", "BorderSize", "Large", file="kwinrc", group="org.kde.kdecoration2")
+
+    def test_they_are_installed_by_the_release_package_and_checked(self):
+        r = dataclasses.replace(recipe.load(RECIPES / "gnome.toml"), settings=[self.CLOCK, self.DARK, self.BORDERS])
+        files = overlay.files(r)
+        d = "argo-base/argo-gnome-release"
+        self.assertEqual(files[f"{d}/files/90_argo-settings.gschema.override"].decode(),
+                         "[org.gnome.desktop.interface]\nclock-show-seconds=true\ncolor-scheme='prefer-dark'\n\n")
+        self.assertEqual(files[f"{d}/files/kde-settings"], b"kwinrc\torg.kde.kdecoration2\tBorderSize\tLarge\n")
+        ebuild = files[f"{d}/argo-gnome-release-0.1.ebuild"].decode()
+        self.assertIn('doins "${FILESDIR}"/90_argo-settings.gschema.override', ebuild)
+        self.assertIn('glib-compile-schemas "${EROOT}"/usr/share/glib-2.0/schemas', ebuild)
+        self.assertIn('done < "${EROOT}"/usr/lib/argo/kde-settings', ebuild)  # values read as data, never as code
+        script = steps.argo(r).script
+        self.assertIn("glib-compile-schemas --strict --dry-run /usr/share/glib-2.0/schemas", script)  # a wrong one fails
+        self.assertIn("gsettings get org.gnome.desktop.interface clock-show-seconds", script)
+
+    def test_without_settings_nothing_changes(self):
+        r = recipe.load(RECIPES / "gnome.toml")
+        ebuild = overlay.files(r)["argo-base/argo-gnome-release/argo-gnome-release-0.1.ebuild"].decode()
+        self.assertNotIn("glib-compile-schemas", ebuild)
+        self.assertNotIn("kwriteconfig6", ebuild)
+        self.assertNotIn("gsettings", steps.argo(r).script)
+
+    def test_they_round_trip_and_bad_ones_are_refused(self):
+        r = dataclasses.replace(recipe.load(RECIPES / "example.toml"), settings=[self.CLOCK, self.BORDERS])
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copytree(RECIPES / "keys", Path(d) / "keys")
+            (Path(d) / "mine.toml").write_text(recipe.dump(r))
+            self.assertEqual(recipe.load(Path(d) / "mine.toml").settings, [self.CLOCK, self.BORDERS])
+        for bad in (dataclasses.replace(self.CLOCK, schema="not a schema"), dataclasses.replace(self.CLOCK, key="Bad_Key"),
+                    dataclasses.replace(self.CLOCK, value="true\nrm -rf /"), dataclasses.replace(self.BORDERS, value="a\tb"),
+                    dataclasses.replace(self.BORDERS, file="../../etc/passwd"), dataclasses.replace(self.BORDERS, group="a]b"),
+                    dataclasses.replace(self.CLOCK, kind="xfconf"), dataclasses.replace(self.CLOCK, value="")):
+            with self.subTest(bad):
+                self.assertTrue(recipe.setting_problems(bad))
+        self.assertEqual(recipe.setting_problems(self.CLOCK), [])
+
+
 class Pictures(unittest.TestCase):
     def test_ppm_to_png(self):
         ppm = b"P6\n# a comment\n2 1\n255\n" + bytes([255, 0, 0, 0, 0, 255])

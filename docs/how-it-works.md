@@ -223,6 +223,10 @@ A program added to the recipe arrives on the PCs this way: the distribution's pa
 - **Publish at least every 30 days**, even with no change. Otherwise installed PCs refuse the distribution's repository as too old. The form shows the last publish date, in red when the limit is near.
 - **Back up `work/binhost/gnupg`**: it holds the signing key. Without it, installed PCs won't accept your updates.
 
+## Default settings (no compiling)
+
+Many wishes are settings the programs already have: GNOME's clock showing seconds, dark mode, the font size, KDE's window borders. On the **Desktop and software** tab, **Default settings → Add a setting…**: say what you want and press **Ask Claude** (it fills the fields in), or fill them in yourself, then **Add the setting** and **Save**. Build then puts them in your distribution's release package: every new user starts with them (and can still change them), a wrong name or value stops the build with a message, and installed PCs get a changed setting with the next update. GNOME (and GTK programs) and KDE Plasma are supported; Xfce's own settings not yet.
+
 ## Changing a program's source code
 
 You can ask for a change to any of the recipe's programs in words, and that one program is compiled with it; everything else still comes as binaries.

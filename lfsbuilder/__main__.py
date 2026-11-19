@@ -149,6 +149,8 @@ def which_program(r: recipes.Recipe, wish: str) -> int:
     print(f"kind: {answer.get('kind', 'unknown')}")
     print(f"package: {answer.get('package', '')}")
     print(f"setting: {answer.get('setting', '')}")
+    for part in ("setting_kind", "schema", "file", "group", "key", "value"):
+        print(f"{part}: {answer.get(part, '')}")
     print(f"explanation: {answer.get('explanation', '')} (${answer['cost']:.2f})", flush=True)
     return 0
 

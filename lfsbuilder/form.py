@@ -90,6 +90,135 @@ class Columns(QGridLayout):
         self.setRowStretch(self.row + 1, 1)
 
 
+def which_fields(out: str) -> dict:
+    """The `which-program` command's answer, field by field."""
+    names = ("kind", "package", "setting", "setting_kind", "schema", "file", "group", "key", "value", "explanation")
+    return {k: v for k, _, v in (l.partition(": ") for l in out.splitlines()) if k in names}
+
+
+class SettingDialog(QDialog):
+    """A default setting: asked of Claude from a wish (which-program), or written by hand; checked
+    like the recipe checks it, and added to the form's recipe (saved with it)."""
+
+    def __init__(self, parent: QWidget, recipe_path: Path, answer: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Add a default setting")
+        self.resize(820, 560)
+        self.recipe_path, self.setting = recipe_path, None
+        self.asker: QProcess | None = None
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Say what you want, and Claude finds the setting (a few cents); or fill it in yourself. "
+                                "A wrong key or value stops the build with a message, so nothing wrong reaches a PC.",
+                                wordWrap=True))
+        wish_row = QHBoxLayout()
+        self.wish = QLineEdit(placeholderText="e.g. The clock in the top bar should show the seconds")
+        ask = QPushButton("Ask Claude")
+        ask.clicked.connect(self.ask)
+        self.ask_button = ask
+        wish_row.addWidget(self.wish, 1)
+        wish_row.addWidget(ask)
+        layout.addLayout(wish_row)
+        form = QFormLayout()
+        self.kind = QComboBox()
+        self.kind.addItem("GNOME and GTK programs (GSettings)", "gsettings")
+        self.kind.addItem("KDE Plasma (a file in /etc/xdg)", "kde")
+        self.schema = QLineEdit(placeholderText="org.gnome.desktop.interface")
+        self.file = QLineEdit(placeholderText="kwinrc")
+        self.group = QLineEdit(placeholderText="Windows")
+        self.key = QLineEdit(placeholderText="clock-show-seconds")
+        self.value = QLineEdit(placeholderText="true")
+        self.about = QLineEdit(placeholderText="what it does, in your words (shown in the list)")
+        form.addRow("Kind", self.kind)
+        form.addRow("Schema", self.schema)
+        form.addRow("File", self.file)
+        form.addRow("Group", self.group)
+        form.addRow("Key", self.key)
+        form.addRow("Value", self.value)
+        form.addRow("What it does", self.about)
+        layout.addLayout(form)
+        self.kind.currentIndexChanged.connect(self._kind_changed)
+        self.status = QLabel(wordWrap=True)
+        layout.addWidget(self.status)
+        layout.addStretch()
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        add = QPushButton("Add the setting")
+        add.clicked.connect(self.add)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(add)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+        self._kind_changed()
+        if answer:
+            self._fill(answer)
+        formhelp.explain(self)
+
+    def _kind_changed(self) -> None:
+        gsettings = self.kind.currentData() == "gsettings"
+        for field in (self.schema,):
+            field.setEnabled(gsettings)
+        for field in (self.file, self.group):
+            field.setEnabled(not gsettings)
+
+    def _fill(self, fields: dict) -> None:
+        if fields.get("setting_kind") in recipes.SETTING_KINDS:
+            self.kind.setCurrentIndex(self.kind.findData(fields["setting_kind"]))
+        for name in ("schema", "file", "group", "key", "value"):
+            if fields.get(name):
+                getattr(self, name).setText(fields[name])
+        if not self.about.text():
+            self.about.setText(self.wish.text().strip() or fields.get("setting", ""))
+        self.status.setText(fields.get("explanation", ""))
+
+    def ask(self) -> None:
+        wish = self.wish.text().strip()
+        if not wish:
+            self.status.setText("Say what you want first.")
+            return
+        self.ask_button.setEnabled(False)
+        self.status.setText("Asking Claude… (under a minute, a few cents)")
+        self.asker = QProcess(self)
+        self.asker.setWorkingDirectory(str(ROOT))
+        self.asker.setProcessChannelMode(QProcess.MergedChannels)
+        self.asker.finished.connect(self._answered)
+        self.asker.start("python3", ["-u", "-m", "lfsbuilder", "which-program", str(self.recipe_path), wish])
+
+    def _answered(self, code: int, _status=None) -> None:
+        self.ask_button.setEnabled(True)
+        out = bytes(self.asker.readAllStandardOutput()).decode(errors="replace")
+        fields = which_fields(out)
+        if code != 0 or "kind" not in fields:
+            self.status.setText("No answer: " + (out.strip().splitlines() or ["Claude Code didn't answer."])[-1])
+            return
+        if fields["kind"] != "setting" or fields.get("setting_kind") not in recipes.SETTING_KINDS:
+            self.status.setText("Claude says this isn't a GNOME or KDE setting: " + fields.get("explanation", "")
+                                + ("\n(A change to a program's source: use Customizations.)" if fields["kind"] == "source" else ""))
+            return
+        self.about.clear()
+        self._fill(fields)
+
+    def add(self) -> None:
+        kind = self.kind.currentData()
+        setting = recipes.Setting(kind=kind, key=self.key.text().strip(), value=self.value.text().strip(),
+                                  schema=self.schema.text().strip() if kind == "gsettings" else "",
+                                  file=self.file.text().strip() if kind == "kde" else "",
+                                  group=self.group.text().strip() if kind == "kde" else "",
+                                  about=self.about.text().strip())
+        problems = recipes.setting_problems(setting)
+        if problems:
+            self.status.setText("Not added: " + "; ".join(problems))
+            return
+        self.setting = setting
+        self.accept()
+
+    def reject(self) -> None:
+        if self.asker and self.asker.state() != QProcess.NotRunning:
+            self.asker.kill()
+            self.asker.waitForFinished(3000)
+        super().reject()
+
+
 class CustomizeDialog(QDialog):
     """A change to a program's source: `customize` (draft only) in the background, the patch shown;
     Keep it saves it with the recipe (customize.keep)."""
@@ -140,9 +269,13 @@ class CustomizeDialog(QDialog):
         self.keep_button = QPushButton("Keep it")
         self.keep_button.setEnabled(False)
         self.keep_button.clicked.connect(self.keep)
+        self.as_setting = QPushButton("Add it as a default setting")
+        self.as_setting.setVisible(False)
+        self.as_setting.clicked.connect(self._as_setting)
+        self.answer: dict = {}
         cancel = QPushButton("Throw it away")
         cancel.clicked.connect(self.reject)
-        for b in (self.write_button, self.keep_button, cancel):
+        for b in (self.as_setting, self.write_button, self.keep_button, cancel):
             buttons.addWidget(b)
         layout.addLayout(buttons)
         formhelp.explain(self)
@@ -181,7 +314,7 @@ class CustomizeDialog(QDialog):
     def _answered(self, code: int, _status=None) -> None:
         self.which_button.setEnabled(True)
         out = bytes(self.asker.readAllStandardOutput()).decode(errors="replace")
-        fields = dict(l.split(": ", 1) for l in out.splitlines() if l.split(": ", 1)[0] in ("kind", "package", "setting", "explanation"))
+        fields = which_fields(out)
         if code != 0 or "kind" not in fields:
             self.status.setText("No answer: " + (out.strip().splitlines() or ["Claude Code didn't answer."])[-1])
             return
@@ -193,6 +326,12 @@ class CustomizeDialog(QDialog):
                 "extension": "An add-on or theme does it, better than changing the source.",
                 }.get(kind, "Claude can't tell which program it is.")
         self.status.setText(f"{head}\n{fields.get('explanation', '')}")
+        self.answer = fields
+        self.as_setting.setVisible(kind == "setting" and fields.get("setting_kind") in recipes.SETTING_KINDS)
+
+    def _as_setting(self) -> None:
+        self.reject()
+        self.parent().add_setting(self.answer)
 
     def write(self) -> None:
         instruction = self.instruction.toPlainText().strip()
@@ -647,6 +786,29 @@ class Form(QMainWindow):
         column.addWidget(self.other_packages)
         layout.addWidget(other)
 
+        defaults = QGroupBox("Default settings (no compiling)")
+        column = QVBoxLayout(defaults)
+        column.addWidget(QLabel("Settings the programs already have, set as your distribution's defaults: the GNOME clock "
+                                "showing seconds, dark mode, KDE's window borders. No compiling: a setting is checked "
+                                "while building (a wrong one stops the build) and reaches installed PCs with an update. "
+                                "Users can still change them for themselves. Xfce's settings aren't supported yet.",
+                                wordWrap=True))
+        self.settings_table = QTableWidget(0, 4)
+        self.settings_table.setHorizontalHeaderLabels(["What it does", "Where", "Key", "Value"])
+        self.settings_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.settings_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.settings_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.settings_table.setMaximumHeight(130)
+        column.addWidget(self.settings_table)
+        row = QHBoxLayout()
+        for label, slot in (("Add a setting…", self.add_setting), ("Remove the setting", self.remove_setting)):
+            b = QPushButton(label)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch()
+        column.addLayout(row)
+        layout.addWidget(defaults, span=3)
+
         changes = QGroupBox("Customizations: changes to a program's source code")
         column = QVBoxLayout(changes)
         column.addWidget(QLabel("Say in words what to change in one of the recipe's programs: Claude writes the change, "
@@ -795,6 +957,7 @@ class Form(QMainWindow):
             return
         self.path, self.base = path, r
         self.path_label.setText(f"Recipe: {path}")
+        self._show_settings(r.settings)
         self.custom_table.setRowCount(0)
         for c in r.customizations:
             row = self.custom_table.rowCount()
@@ -1092,6 +1255,35 @@ class Form(QMainWindow):
         timer.start()
         refresh()
         dialog.exec()
+
+    def _show_settings(self, settings: list) -> None:
+        self.settings_table.setRowCount(0)
+        for x in settings:
+            row = self.settings_table.rowCount()
+            self.settings_table.insertRow(row)
+            for column, text in enumerate((x.about or x.key, x.where(), x.key, x.value)):
+                self.settings_table.setItem(row, column, QTableWidgetItem(text))
+
+    def add_setting(self, answer: dict | None = None) -> None:
+        dialog = SettingDialog(self, self.path, answer if isinstance(answer, dict) else None)
+        if dialog.exec() == QDialog.Accepted and dialog.setting:
+            self._add_setting(dialog.setting)
+
+    def _add_setting(self, setting) -> None:
+        settings = [x for x in self.base.settings if (x.kind, x.where(), x.key) != (setting.kind, setting.where(), setting.key)]
+        self.base = dataclasses.replace(self.base, settings=[*settings, setting])
+        self._show_settings(self.base.settings)
+        self.progress.setText(f"Setting {setting.key} added: Save, then Build (only the last steps are redone).")
+
+    def remove_setting(self) -> None:
+        row = self.settings_table.currentRow()
+        if row < 0 or row >= len(self.base.settings):
+            return
+        settings = list(self.base.settings)
+        gone = settings.pop(row)
+        self.base = dataclasses.replace(self.base, settings=settings)
+        self._show_settings(settings)
+        self.progress.setText(f"Setting {gone.key} removed: Save, then Build.")
 
     def _selected_customization(self) -> str:
         row = self.custom_table.currentRow()

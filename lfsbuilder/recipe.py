@@ -41,6 +41,27 @@ CUSTOM_PATCH = "customization.patch"
 
 
 @dataclasses.dataclass
+class Setting:
+    """A default setting of the installed system, no compiling ([[settings]]): written by the release
+    package (overlay.py), so a change reaches installed systems with an update.
+      gsettings: GNOME's and GTK programs' settings: schema, key, value (GVariant text: true, 'text', 42)
+      kde:       KDE Plasma's: a file in /etc/xdg (kdeglobals, kwinrc, ...), its group, key and value"""
+    kind: str
+    key: str
+    value: str
+    schema: str = ""  # gsettings
+    file: str = ""    # kde
+    group: str = ""   # kde
+    about: str = ""   # what it does, in plain words (shown in the form)
+
+    def where(self) -> str:
+        return self.schema if self.kind == "gsettings" else f"{self.file} [{self.group}]"
+
+
+SETTING_KINDS = ("gsettings", "kde")
+
+
+@dataclasses.dataclass
 class Recipe:
     path: Path
     name: str
@@ -74,6 +95,7 @@ class Recipe:
     branding: str = "argo"  # [distribution] branding: the folder branding/<branding>/ with its logo (branding.py)
     label: str = ""         # [distribution] label: the words beside the logo; empty = the name
     customizations: list[Customization] = dataclasses.field(default_factory=list)
+    settings: list[Setting] = dataclasses.field(default_factory=list)
     fixes: list = dataclasses.field(default_factory=list)  # fixes.Fix, from <name>.fixes.toml beside the recipe
 
     @property
@@ -126,6 +148,35 @@ _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FULL_NAME = re.compile(r"^[^:,\n]*$")
 # The name and version reach GRUB's configuration, os-release and the console's banner.
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$")
+_SCHEMA = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$")  # org.gnome.desktop.interface
+_GKEY = re.compile(r"^[a-z][a-z0-9-]{0,127}$")                         # clock-show-seconds
+_KFILE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")                          # kwinrc, kdeglobals
+_KTEXT = re.compile(r"^[^\t\n\r\0\[\]]{1,128}$")                     # a KDE group or key: one line, no tabs
+_VALUE = re.compile(r"^[^\t\n\r\0]{0,500}$")                            # one line, no tabs (a tab-separated file)
+
+
+def setting_problems(s: Setting) -> list[str]:
+    """What is wrong with a setting (it goes into files the release package installs)."""
+    out = []
+    if s.kind not in SETTING_KINDS:
+        out.append(f"kind must be one of {', '.join(SETTING_KINDS)}, not {s.kind!r}")
+    elif s.kind == "gsettings":
+        if not _SCHEMA.match(s.schema):
+            out.append(f"schema {s.schema!r} isn't a GSettings schema (like org.gnome.desktop.interface)")
+        if not _GKEY.match(s.key):
+            out.append(f"key {s.key!r} isn't a GSettings key (lower-case letters, digits and -)")
+    else:
+        if not _KFILE.match(s.file) or s.file.startswith("."):
+            out.append(f"file {s.file!r} isn't a KDE configuration file name (like kwinrc)")
+        if not _KTEXT.match(s.group) or not _KTEXT.match(s.key):
+            out.append("group and key must be one line each, without tabs or [ ]")
+    if not _VALUE.match(s.value) or not s.value.strip():
+        out.append("the value must be one line, without tabs")
+    if not _VALUE.match(s.about):
+        out.append("about must be one line")
+    return out
+
+
 _CHECK = re.compile(r"^[^\n\r\0]{0,300}$")  # one line: it goes into the package's step as it is
 _BRANDING = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # A distribution's own drawings (branding.py composes the rest from them and the label).
@@ -293,6 +344,16 @@ def load(path: Path) -> Recipe:
         if not _CHECK.match(custom.check):
             problems.append(f"customizations {custom.package}: check must be one line of shell (up to 300 characters)")
         recipe.customizations.append(custom)
+    raw_settings = data.get("settings", [])
+    if not isinstance(raw_settings, list) or not all(isinstance(x, dict) for x in raw_settings):
+        problems.append("settings must be a list of tables ([[settings]])")
+        raw_settings = []
+    for x in raw_settings:
+        setting = Setting(kind=str(x.get("kind", "")), key=str(x.get("key", "")), value=str(x.get("value", "")),
+                          schema=str(x.get("schema", "")), file=str(x.get("file", "")), group=str(x.get("group", "")),
+                          about=str(x.get("about", "")))
+        problems += [f"settings {setting.key!r}: {p}" for p in setting_problems(setting)]
+        recipe.settings.append(setting)
     names = [a.name for a in recipe.accounts]
     for a in recipe.accounts:
         if not _USER.match(a.name) or a.name == "root":
@@ -412,6 +473,10 @@ def dump(r: Recipe) -> str:
         out += ["", "[installer]", "graphical = true"]
     out += ["", "[output]"]
     out += [f"{key} = {value if isinstance(value, int) else _s(str(value))}" for key, value in r.output.items()]
+    for x in r.settings:
+        out += ["", "[[settings]]", f"kind = {_s(x.kind)}",
+                *([f"schema = {_s(x.schema)}"] if x.kind == "gsettings" else [f"file = {_s(x.file)}", f"group = {_s(x.group)}"]),
+                f"key = {_s(x.key)}", f"value = {_s(x.value)}", *([f"about = {_s(x.about)}"] if x.about else [])]
     for c in r.customizations:  # (each one's patch is a file beside the recipe, not in it)
         out += ["", "[[customizations]]", f"package = {_s(c.package)}", f"instruction = {_s(c.instruction)}",
                 *([f"check = {_s(c.check)}"] if c.check else [])]

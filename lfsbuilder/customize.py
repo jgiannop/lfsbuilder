@@ -194,6 +194,11 @@ You get their wish, the desktop the distribution has, and the list of every pack
 - kind "extension": an add-on or theme the desktop supports does it, better than changing the source.
 - kind "source": it needs a change to a program's source code. Give that program's package in `package`, exactly as it appears in the list.
 - kind "unknown": you can't tell.
+For a setting, also give it in parts, for lfsbuilder to set as the system's default:
+- setting_kind "gsettings" (GNOME, GTK programs): schema (like org.gnome.desktop.interface), key, value in GVariant text (true, false, 42, 'text', ['a', 'b']);
+- setting_kind "kde" (KDE Plasma): file (a file name in /etc/xdg, like kwinrc or kdeglobals), group (like Windows), key, value;
+- setting_kind "other" for anything else (an Xfce xfconf property, a config file), described in `setting`.
+Leave the parts you don't use empty. Give only keys and values you are sure exist in the versions of this system's packages.
 Always name in `package` the package (from the list) the wish is about, when there is one, even for a setting. `explanation`: two or three plain sentences for someone who isn't a programmer: what the thing is, where it lives, and what you suggest."""
 
 WHICH_SCHEMA = {
@@ -202,9 +207,15 @@ WHICH_SCHEMA = {
         "kind": {"type": "string", "enum": ["setting", "extension", "source", "unknown"]},
         "package": {"type": "string"},
         "setting": {"type": "string"},
+        "setting_kind": {"type": "string", "enum": ["gsettings", "kde", "other", ""]},
+        "schema": {"type": "string"},
+        "file": {"type": "string"},
+        "group": {"type": "string"},
+        "key": {"type": "string"},
+        "value": {"type": "string"},
         "explanation": {"type": "string"},
     },
-    "required": ["kind", "package", "setting", "explanation"],
+    "required": ["kind", "package", "setting", "setting_kind", "schema", "file", "group", "key", "value", "explanation"],
 }
 
 

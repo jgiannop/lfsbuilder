@@ -115,6 +115,18 @@ FIELDS = {
         "<i>an owl in flight over the sea at night, simple flat shapes, gold and dark blue</i>. Simple, flat "
         "logos come out best."),
     # The customization window
+    "Kind": (
+        "Where the setting lives. <b>GSettings</b>: GNOME and most GTK programs (Files, the text editor, "
+        "GNOME's top bar…). <b>KDE</b>: KDE Plasma and its programs, in files of /etc/xdg."),
+    "Schema": "GSettings only: the group the key is in, like <i>org.gnome.desktop.interface</i>. <b>Ask Claude</b> fills it in.",
+    "File": "KDE only: the configuration file, like <i>kwinrc</i> (windows) or <i>kdeglobals</i> (everything).",
+    "Group": "KDE only: the [group] in that file, like <i>Windows</i>.",
+    "Key": "The setting's name, like <i>clock-show-seconds</i>.",
+    "Value": (
+        "The value. GSettings writes them its own way: <i>true</i> / <i>false</i>, numbers as they are, text in "
+        "quotes (<i>'prefer-dark'</i>), lists in brackets (<i>['a', 'b']</i>). A wrong one stops the build "
+        "with a message."),
+    "What it does": "In your own words, for the list: <i>Clock with seconds</i>.",
     "Program": (
         "The program whose source code to change: any program of the system, not only the recipe's own (GNOME, "
         "for example, is ~300 programs: its top bar is <i>gnome-base/gnome-shell</i>, its windows "
@@ -156,6 +168,12 @@ BOXES = {
     "Other packages": (
         "Any other Gentoo package, one per line, as <i>category/name</i> (like <i>games-puzzle/sgt-puzzles</i>). "
         "Find names at <i>packages.gentoo.org</i>. <b>Check</b> tells if it fits your choices."),
+    "Default settings (no compiling)": (
+        "Settings your programs already have, made your distribution's defaults: every new user starts with "
+        "them, and can still change them. Examples: GNOME's clock showing seconds, dark mode, the font size; "
+        "KDE's window borders.<br><br>No compiling, so a build takes seconds more. Each setting is checked while "
+        "building: a wrong name or value stops the build with a message. Installed PCs get changed settings with "
+        "the next update. Xfce's own settings aren't supported yet."),
     "Customizations: changes to a program's source code": (
         "Change what a program does, in words: Claude edits the program's real source code, you read the "
         "change, and the build compiles that program with it (everything else still comes ready-made).<br><br>"
@@ -237,6 +255,11 @@ OPTIONS = {
     "Show the change": "Show the patch (the exact lines changed) of the selected customization.",
     "Draw": "Ask Claude for the logo (a few cents, about a minute).",
     "Use it": "Use this logo: it is picked in Logo. Save, then Check or Build.",
+    "Add a setting…": "Add a default setting: say what you want and Claude finds it, or fill it in yourself.",
+    "Remove the setting": "Take the selected setting out (Save, then Build).",
+    "Ask Claude": "Claude finds the setting for what you said (a few cents, under a minute) and fills the fields in. Check them, then Add.",
+    "Add the setting": "Add it to the recipe's settings (then Save the recipe).",
+    "Add it as a default setting": "Claude found that your wish is only a setting: add it as a default setting instead of changing the source.",
     "Which program? (ask Claude)": (
         "Claude reads your instruction and the list of the system's programs, and says where the change belongs: "
         "a program's source (it picks the program for you), a setting the program already has (no compiling), "

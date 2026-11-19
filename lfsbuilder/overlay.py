@@ -221,6 +221,7 @@ def _release(r: Recipe) -> dict[str, bytes]:
     files[f"{d}/files/xfdesktop.env"] = XFDESKTOP_HOOK.encode()
     files[f"{d}/files/lightdm-50-argo.conf"] = LIGHTDM_SESSION.encode()
     lnf = f"/usr/share/plasma/look-and-feel/{PLASMA_LNF}"
+    settings_install, settings_postinst, settings_postrm = _settings(r, d, files)
     pictures = "\n".join(f'\tdoins "${{FILESDIR}}"/{name}' for name in PICTURES)
     ebuild = f"""# Written by lfsbuilder: the release package of {r.name}.
 EAPI=8
@@ -286,7 +287,7 @@ src_install() {{
 \t\t\tnewins "${{FILESDIR}}"/lightdm-50-argo.conf 50-argo.conf
 \t\tfi
 \tfi
-}}
+{settings_install}}}
 
 pkg_postinst() {{
 \t# A file in place of baselayout's link to /usr/lib/os-release: /etc is protected, so
@@ -313,15 +314,49 @@ pkg_postinst() {{
 \tif use xfce; then
 \t\t( source "${{EROOT}}"/etc/portage/env/xfce-base/xfdesktop; argo_wallpaper "${{EROOT}}/" )
 \tfi
-\txdg_icon_cache_update
+{settings_postinst}\txdg_icon_cache_update
 }}
 
 pkg_postrm() {{
-\txdg_icon_cache_update
+{settings_postrm}\txdg_icon_cache_update
 }}
 """
     files[f"{d}/{d.split('/')[1]}-{r.version}.ebuild"] = ebuild.encode()
     return files
+
+
+SCHEMAS = "/usr/share/glib-2.0/schemas"
+OVERRIDE = "90_argo-settings.gschema.override"  # after the packages' own overrides (they number lower)
+
+
+def _settings(r: Recipe, d: str, files: dict[str, bytes]) -> tuple[str, str, str]:
+    """The recipe's default settings in the release package (empty strings when it has none, so its
+    ebuild stays as it was): GSettings as a schema override, compiled into GLib's schema cache (every
+    package that installs schemas compiles them again, ours included, so it survives their updates);
+    KDE's written into /etc/xdg with kwriteconfig6, read from a tab-separated file (never as code)."""
+    gs = [x for x in r.settings if x.kind == "gsettings"]
+    kde = [x for x in r.settings if x.kind == "kde"]
+    install = postinst = postrm = ""
+    if gs:
+        text = ""
+        for schema in dict.fromkeys(x.schema for x in gs):
+            text += f"[{schema}]\n" + "".join(f"{x.key}={x.value}\n" for x in gs if x.schema == schema) + "\n"
+        files[f"{d}/files/{OVERRIDE}"] = text.encode()
+        install += f'\tinsinto {SCHEMAS}\n\tdoins "${{FILESDIR}}"/{OVERRIDE}\n'
+        compile_ = (f'\tif type -P glib-compile-schemas >/dev/null; then\n'
+                    f'\t\tglib-compile-schemas "${{EROOT}}"{SCHEMAS} || ewarn "glib-compile-schemas failed"\n\tfi\n')
+        postinst += compile_
+        postrm += compile_
+    if kde:
+        files[f"{d}/files/kde-settings"] = "".join(f"{x.file}\t{x.group}\t{x.key}\t{x.value}\n" for x in kde).encode()
+        install += '\tinsinto /usr/lib/argo\n\tdoins "${FILESDIR}"/kde-settings\n'
+        postinst += ('\tif type -P kwriteconfig6 >/dev/null; then\n'
+                     '\t\tlocal file group key value\n'
+                     "\t\twhile IFS=$'\\t' read -r file group key value; do\n"
+                     '\t\t\tkwriteconfig6 --file "${EROOT}/etc/xdg/${file}" --group "${group}" --key "${key}" "${value}"\n'
+                     '\t\tdone < "${EROOT}"/usr/lib/argo/kde-settings\n'
+                     '\telse\n\t\tewarn "kwriteconfig6 is missing: the KDE settings are not set"\n\tfi\n')
+    return install, postinst, postrm
 
 
 def _meta(r: Recipe) -> dict[str, bytes]:

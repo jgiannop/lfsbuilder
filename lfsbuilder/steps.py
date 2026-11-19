@@ -275,6 +275,12 @@ def argo(r: Recipe) -> Step:
     # and USE flags may hold older pictures or files, and the newest build is what gets published.
     script += f"emerge --verbose --usepkg=n --getbinpkg=n {overlay.release_name(r)} {overlay.meta_name(r)}\n"
     script += f"emerge --verbose --noreplace {overlay.meta_name(r)}\n"  # (the world file: only it)
+    gs = [x for x in r.settings if x.kind == "gsettings"]
+    if gs:
+        # The default settings checked: GLib refuses a schema, key or value it doesn't know (--strict),
+        # and each reads back as the system's default.
+        script += f"glib-compile-schemas --strict --dry-run {overlay.SCHEMAS} >/dev/null\n"
+        script += "".join(f"gsettings get {shlex.quote(x.schema)} {shlex.quote(x.key)}\n" for x in gs)
     return Step("argo", f"{r.name} {r.version}: {overlay.release_name(r)}, {overlay.meta_name(r)}", script)
 
 
