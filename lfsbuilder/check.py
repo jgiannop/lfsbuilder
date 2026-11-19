@@ -62,7 +62,9 @@ def check(r: Recipe, image: str, shared: Shared) -> Result:
     try:
         for _ in range(ROUNDS):
             scratch = "".join(f"{p} {' '.join(f)}\n" for p, f in use.items())
-            subprocess.run(["docker", "exec", "-i", container, "sh", "-c", "cat > /etc/portage/package.use/zz-lfsbuilder-check"],
+            # (package.use is a directory the portage step no longer makes: the recipe's USE is the argo profile's)
+            subprocess.run(["docker", "exec", "-i", container, "sh", "-c",
+                            "mkdir -p /etc/portage/package.use && cat > /etc/portage/package.use/zz-lfsbuilder-check"],
                            input=scratch, text=True, check=True)
             answer = subprocess.run(["docker", "exec", container, "bash", "-lc", ROUND.format(targets=" ".join(targets(r)))],
                                     text=True, capture_output=True).stdout

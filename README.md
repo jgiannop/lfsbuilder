@@ -30,6 +30,8 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv/bin/python 
 .venv/bin/python -m lfsbuilder.form recipes/gnome.toml
 ```
 
+A step-by-step walk-through, from a new recipe to an ISO installed in VirtualBox: [docs/how-it-works.md](docs/how-it-works.md).
+
 Tests: `python3 -m unittest discover -s tests`.
 
 Needs Docker, Python 3.11 or later (for `tomllib`), QEMU (with KVM for speed) for the boot test, and Claude Code for `--repair`. Run `boot --console` and the form in a real terminal (Ctrl-A X can't reach QEMU through Claude Code's `!`).
