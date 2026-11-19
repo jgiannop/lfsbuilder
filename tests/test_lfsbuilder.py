@@ -20,6 +20,8 @@ from lfsbuilder import branding, calamares, customize, logo, check, estimate, fi
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES = ROOT / "recipes"
+# The example recipes, the ones in git: the owner's own (out of git, .gitignore) may be half-made.
+EXAMPLES = [RECIPES / f"{n}.toml" for n in ("example", "gnome", "openrc", "plasma", "xfce")]
 HASH = "$6$woOKfvYyg2qIitmP$uwQTom.5BvfCc80CZEQjS6ju6fOVms4TIY7fDqwNuLmUaCL81QIy8pimI6SZ10XYd6kghXygCXG4yeCkIWLPz."
 
 
@@ -39,7 +41,7 @@ def example_text(**changes: str) -> str:
 
 class Recipes(unittest.TestCase):
     def test_the_recipes_load(self):
-        for path in sorted(RECIPES.glob("*.toml")):
+        for path in EXAMPLES:
             if not path.name.endswith(".fixes.toml"):
                 with self.subTest(path.name):
                     recipe.load(path)
@@ -495,7 +497,7 @@ class Branding(unittest.TestCase):
             for name in recipe.BRANDING_FILES:
                 with self.subTest(f"{folder.name}/{name}"):
                     xml.dom.minidom.parse(str(folder / name))
-        for path in sorted(RECIPES.glob("*.toml")):
+        for path in EXAMPLES:
             with self.subTest(path.name):
                 r = recipe.load(path)
                 self.assertTrue(branding.current(r), f"python3 -m lfsbuilder branding {path}")

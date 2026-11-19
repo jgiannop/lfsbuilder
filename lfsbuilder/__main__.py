@@ -76,7 +76,7 @@ def draw_pictures(r: recipes.Recipe, again: bool = False) -> None:
     if again or not branding.current(r):
         out = branding.render(tools(), r, WORK / "branding-render")
         print(f"drew the pictures of {r.label_text} ({r.branding}) into {out.relative_to(ROOT)}; "
-              "they belong in git beside the drawings", flush=True)
+              "kept beside the drawings", flush=True)
 
 
 def customize_package(r: recipes.Recipe, package: str, instruction: str, check: str, keep: bool) -> int:

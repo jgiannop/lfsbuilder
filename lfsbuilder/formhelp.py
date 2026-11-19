@@ -165,6 +165,11 @@ BOXES = {
     "Editors and development": "Text and code editors, programming languages, containers and virtual machines.",
     "System tools": "Disks, backups, printing, passwords, remote login and system monitors.",
     "Terminal and utilities": "Terminals and command-line tools: downloads, archives, searching, networks and VPNs.",
+    "Security tools": (
+        "Tools for security testing and forensics, like Kali's: network scanners, Wi-Fi testing, password "
+        "auditing, reverse engineering, disk and memory forensics (nmap and Wireshark are in Terminal and "
+        "utilities).<br><br><b>Only for your own systems, CTFs, learning, or testing you are allowed to do:</b> "
+        "using them on networks or computers without permission is illegal in most countries."),
     "KDE apps": (
         "KDE's own applications (KDE Gear): calculator, editors, viewers, games and more. They fit KDE Plasma best "
         "(same look, same settings), and run on other desktops too, pulling in some KDE libraries."),

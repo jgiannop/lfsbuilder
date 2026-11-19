@@ -7,6 +7,9 @@ __pycache__/
 # work/binhost/gnupg): only Argo's logo (the default) and the example recipes belong to the tool.
 /branding/*
 !/branding/argo/
+# (Argo's own pictures only: those drawn for another label, a user's distribution with Argo's logo, are theirs)
+/branding/argo/pictures/*
+!/branding/argo/pictures/argo-linux/
 /recipes/*
 !/recipes/keys/
 !/recipes/example.*

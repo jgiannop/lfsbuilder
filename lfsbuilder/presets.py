@@ -64,7 +64,7 @@ class Software:
 
 # The groups the form shows the software in, in this order.
 GROUPS = ("Internet", "Office", "Multimedia", "Graphics", "Editors and development", "System tools",
-          "Terminal and utilities", "KDE apps")
+          "Terminal and utilities", "KDE apps", "Security tools")
 
 # Every package here has a stable amd64 version in the pinned tree (checked 2026-11-19 against
 # e19f4a84) and a licence Gentoo accepts by default. The order is the recipe's package order (the
@@ -189,6 +189,28 @@ SOFTWARE = (
     Software("kde-apps/kpat", "KPatience (card games)", group="KDE apps"),
     Software("kde-apps/kmines", "KMines (minesweeper)", group="KDE apps"),
     Software("kde-apps/kmahjongg", "KMahjongg (mahjong)", group="KDE apps"),
+    # Security tools (Kali's best known that the pinned tree has, stable; checked 2026-11-19 against e19f4a84).
+    # For your own systems, CTFs, learning and authorized testing only.
+    # Left out, testing only (~amd64) in e19f4a84 by Portage's own answer (portageq best_visible): masscan, reaver,
+    # johntheripper-jumbo, hashcat, crunch, nikto, radare2, volatility3, lynis; kismet: needs an older Python;
+    # mitmproxy: needs a Rust with eBPF sysroots (rust_sysroots_bpf) the tree's rust-bin lacks.
+    Software("net-analyzer/tcpdump", "tcpdump (capture network traffic)", group="Security tools"),
+    Software("net-analyzer/ettercap", "Ettercap (network interception)", group="Security tools"),
+    Software("net-analyzer/openbsd-netcat", "netcat (network Swiss army knife)", group="Security tools"),
+    Software("net-misc/socat", "socat (connect anything to anything)", group="Security tools"),
+    Software("net-wireless/aircrack-ng", "Aircrack-ng (Wi-Fi security)", group="Security tools"),
+    Software("net-analyzer/hydra", "Hydra (login testing)", group="Security tools"),
+    Software("dev-db/sqlmap", "sqlmap (SQL injection testing)", group="Security tools"),
+    Software("dev-util/rizin", "rizin (reverse engineering)", group="Security tools"),
+    Software("app-misc/binwalk", "binwalk (firmware analysis)", group="Security tools"),
+    Software("app-forensics/sleuthkit", "The Sleuth Kit (disk forensics)", group="Security tools"),
+    Software("app-forensics/yara", "YARA (malware patterns)", group="Security tools"),
+    Software("app-forensics/foremost", "foremost (recover files)", group="Security tools"),
+    Software("app-admin/testdisk", "TestDisk and PhotoRec (recover partitions and files)", group="Security tools"),
+    Software("app-forensics/chkrootkit", "chkrootkit (look for rootkits)", group="Security tools"),
+    Software("app-forensics/rkhunter", "rkhunter (look for rootkits)", group="Security tools"),
+    Software("net-vpn/tor", "Tor (anonymity network)", group="Security tools"),
+    Software("net-proxy/torsocks", "torsocks (run a program through Tor)", group="Security tools"),
 )
 
 LOCALES = ("en_US.UTF-8", "en_GB.UTF-8", "el_GR.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8", "it_IT.UTF-8")
