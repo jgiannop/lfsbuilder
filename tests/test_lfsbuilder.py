@@ -16,7 +16,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from lfsbuilder import branding, calamares, logo, check, estimate, fixes, image, overlay, recipe, repair, runner, steps
+from lfsbuilder import branding, calamares, customize, logo, check, estimate, fixes, image, overlay, recipe, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES = ROOT / "recipes"
@@ -568,6 +568,99 @@ class Branding(unittest.TestCase):
             with self.assertRaises(recipe.RecipeError) as raised:
                 recipe.load(path)
             self.assertIn("branding/nowhere/ has no logo.svg", str(raised.exception))
+
+
+NANO_PATCH = """diff -ruN --no-dereference a/src/nano.c b/src/nano.c
+--- a/src/nano.c\t2026-07-31 09:07:59.000000000 +0300
++++ b/src/nano.c\t2026-11-19 12:38:40.101695517 +0200
+@@ -660,6 +660,7 @@
+ \tprintf(_(" (C) %s the Free Software Foundation and various contributors\\n"), "2026");
+ #endif
++\tprintf(" Hello world from Odyssey\\n");
+ \tprintf(_(" Compiled options:"));
+ 
+ #ifdef NANO_TINY
+"""
+
+
+class Customizations(unittest.TestCase):
+    """A package's source changed in words (customize.py): the patch kept beside the recipe."""
+
+    def recipe(self, d: Path, entry: str, patch: str | None = NANO_PATCH) -> Path:
+        shutil.copytree(RECIPES / "keys", Path(d) / "keys")
+        path = Path(d) / "mine.toml"
+        path.write_text((RECIPES / "example.toml").read_text() + "\n" + entry)
+        if patch is not None:
+            target = Path(d) / "mine.patches" / "app-editors" / "nano" / "customization.patch"
+            target.parent.mkdir(parents=True)
+            target.write_text(patch)
+        return path
+
+    NANO = ('[[customizations]]\npackage = "app-editors/nano"\n'
+            'instruction = "Add the line \'Hello world from Odyssey\' to nano --version"\n'
+            'check = "nano --version | grep -q \'Hello world from Odyssey\'"\n')
+
+    def test_the_package_is_compiled_with_the_patch_and_checked(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = recipe.load(self.recipe(d, self.NANO))
+            self.assertEqual(r.customizations[0].patch, NANO_PATCH)
+            self.assertIn("app-editors/nano", r.packages)
+            step = next(s for s in steps.all_steps(r) if s.name == "app-editors_nano")
+            self.assertIn("cat > /etc/portage/patches/app-editors/nano/customization.patch", step.script)
+            self.assertIn('printf(" Hello world from Odyssey', step.script)
+            self.assertIn("--usepkg-exclude app-editors/nano", step.script)  # no binary in its place
+            self.assertNotIn("--noreplace", step.script)  # nano comes with the stage3: install it again
+            self.assertTrue(step.script.rstrip().endswith("nano --version | grep -q 'Hello world from Odyssey'"))
+            plain = next(s for s in steps.all_steps(recipe.load(RECIPES / "example.toml")) if s.name == "app-editors_nano")
+            self.assertNotEqual(step.script, plain.script)  # a fingerprint of its own
+            (Path(d) / "mine.toml").write_text(recipe.dump(r))  # what the form saves
+            again = recipe.load(Path(d) / "mine.toml")
+            self.assertEqual([(c.package, c.instruction, c.check) for c in again.customizations],
+                             [(c.package, c.instruction, c.check) for c in r.customizations])
+
+    def test_bad_customizations_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(recipe.RecipeError) as raised:
+                recipe.load(self.recipe(d, self.NANO, patch=None))
+            self.assertIn("no patch yet", str(raised.exception))
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(recipe.RecipeError) as raised:
+                recipe.load(self.recipe(d, self.NANO.replace("check = \"", "check = \"true\\nrm -rf / #")))
+            self.assertIn("one line of shell", str(raised.exception))
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(recipe.RecipeError) as raised:
+                recipe.load(self.recipe(d, self.NANO, patch="not a diff at all\n"))
+            self.assertIn("isn't a unified diff", str(raised.exception))
+        with tempfile.TemporaryDirectory() as d:
+            r = recipe.load(self.recipe(d, self.NANO))
+            other = dataclasses.replace(r, customizations=[dataclasses.replace(r.customizations[0], package="app-misc/abduco")])
+            with self.assertRaises(fixes.FixError):
+                steps.all_steps(other)  # not one of the recipe's packages
+
+    def test_patches_are_made_here_and_checked(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "a", Path(d) / "b"
+            for root in (a, b):
+                (root / "src").mkdir(parents=True)
+                (root / "src" / "nano.c").write_text("int main(void) { return 0; }\n")
+            with self.assertRaises(customize.CustomizeError):
+                customize.make_patch(a, b)  # nothing changed
+            (b / "src" / "nano.c").write_text('int main(void) { puts("Hello world"); return 0; }\n')
+            patch = customize.make_patch(a, b)
+            self.assertIn("--- a/src/nano.c", patch)
+            self.assertIn('+int main(void) { puts("Hello world"); return 0; }', patch)
+        for bad in ("Binary files a/x.png and b/x.png differ\n--- a/x\n+++ b/x\n",
+                    "--- a/../../etc/passwd\n+++ b/../../etc/passwd\n@@ -1 +1 @@\n-x\n+y\n",
+                    NANO_PATCH + "LFSBUILDER_PATCH_EOF\n"):
+            with self.subTest(bad[:30]):
+                with self.assertRaises(customize.CustomizeError):
+                    customize.check_patch(bad)
+        self.assertEqual(customize.check_patch(NANO_PATCH), NANO_PATCH)
+
+    def test_a_repair_patch_is_compiled_too(self):
+        fix = fixes.Fix(step="app-editors_nano", kind="patch", package="app-editors/nano", values=["fix.patch"],
+                        why="", by="claude", patch=NANO_PATCH)
+        self.assertIn("--usepkg-exclude app-editors/nano", fixes.script([fix]))
 
 
 class Pictures(unittest.TestCase):

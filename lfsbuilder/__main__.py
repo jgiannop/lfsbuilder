@@ -20,12 +20,13 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
+import shutil
 import subprocess
 import sys
 import types
 from pathlib import Path
 
-from . import binhost, branding, logo, check as checks, clones, estimate, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
+from . import binhost, branding, customize, logo, check as checks, clones, estimate, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
@@ -76,6 +77,36 @@ def draw_pictures(r: recipes.Recipe, again: bool = False) -> None:
         out = branding.render(tools(), r, WORK / "branding-render")
         print(f"drew the pictures of {r.label_text} ({r.branding}) into {out.relative_to(ROOT)}; "
               "they belong in git beside the drawings", flush=True)
+
+
+def customize_package(r: recipes.Recipe, package: str, instruction: str, check: str, keep: bool) -> int:
+    """A change to the package's source written by Claude (customize.py): the patch printed, and with
+    `keep` saved beside the recipe with its [[customizations]] entry; without, only as a draft."""
+    p = planned(r)
+    if p is None:
+        return 1
+    if runner.run(p[:1], gentoo.stage3_image(stage3_path(r), stage3_image(r)), shared(r), WORK / f"build-{r.stem}" / "logs", quiet=True):
+        return 1
+    work = WORK / "customize" / r.stem / package.replace("/", "_")
+    print(f"preparing {package}'s source (the version the build compiles), then asking Claude", flush=True)
+    try:
+        d = customize.draft(r, p[0].image, shared(r), package, instruction, work)
+    except (customize.CustomizeError, subprocess.TimeoutExpired) as error:
+        print(f"no change: {error}", file=sys.stderr)
+        return 1
+    draft = work.with_suffix(".patch")
+    draft.write_text(d.patch)
+    print(f"source: {d.version}", flush=True)
+    print(f"Claude changed: {d.summary} (${d.cost:.2f})", flush=True)
+    print(f"draft: {draft.relative_to(ROOT)}", flush=True)
+    print("----- the change -----")
+    print(d.patch, end="" if d.patch.endswith("\n") else "\n")
+    print("----- end of the change -----", flush=True)
+    shutil.rmtree(work, ignore_errors=True)  # (the source copies: Firefox's are gigabytes)
+    if keep:
+        customize.keep(r.path, package, instruction, check, d.patch)
+        print(f"kept: {package} is compiled with it from the next build on", flush=True)
+    return 0
 
 
 def draw_logo(name: str, description: str, label: str, replace: bool) -> int:
@@ -466,11 +497,16 @@ def main(argv: list[str] | None = None) -> int:
     draw.add_argument("description", help="what the logo should show")
     draw.add_argument("--label", default="Argo Linux", help="the words beside the logo in the pictures")
     draw.add_argument("--replace", action="store_true", help="replace branding/NAME/ if it is there")
-    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish", "branding"):
+    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish", "branding", "customize"):
         command = sub.add_parser(name)
         command.add_argument("recipe", type=Path)
         if name == "boot":
             command.add_argument("--console", action="store_true", help="stay in the system's console to log in (Ctrl-A X quits)")
+        if name == "customize":
+            command.add_argument("package", help="the package to change (one of the recipe's)")
+            command.add_argument("instruction", help="what to change, in words")
+            command.add_argument("--check", default="", help="a shell command run after it is built; the step fails if it does")
+            command.add_argument("--keep", action="store_true", help="save the change beside the recipe (without: a draft only)")
         if name in ("boot", "iso"):
             command.add_argument("--login", metavar="USER",
                                  help=f"log in as USER at the display manager's greeter and check a desktop session starts "
@@ -501,6 +537,8 @@ def main(argv: list[str] | None = None) -> int:
         draw_pictures(r, again=True)
         return 0
     draw_pictures(r)
+    if args.command == "customize":
+        return customize_package(r, args.package, args.instruction, args.check, args.keep)
     if args.command == "prepare":
         return prepare(r)
     if args.command == "plan":

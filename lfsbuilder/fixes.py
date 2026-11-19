@@ -136,6 +136,10 @@ def script(fixes: list[Fix]) -> str:
             out += "".join(f"echo '{v}' >> /etc/portage/env/{fix.tag}.conf\n" for v in fix.values)
             out += f"echo '{fix.package} {fix.tag}.conf' >> /etc/portage/package.env/{fix.tag}\n"
         elif fix.kind == "patch":
+            # No binary of the package in this step: one of the same version and USE (Gentoo's, or our
+            # own unpatched one) would be installed in its place and the patch left out.
             directory = f"/etc/portage/patches/{fix.package}"
             out += f"mkdir -p {directory}\ncat > {directory}/{fix.values[0]} << 'LFSBUILDER_PATCH_EOF'\n{fix.patch.rstrip()}\nLFSBUILDER_PATCH_EOF\n"
+            out += f'export EMERGE_DEFAULT_OPTS="${{EMERGE_DEFAULT_OPTS:-}} --usepkg-exclude {fix.package}"\n'
+
     return out

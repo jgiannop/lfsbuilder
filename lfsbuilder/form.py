@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __main__ as cli, binhost, branding, estimate, gentoo, presets, recipe as recipes, steps
+from . import __main__ as cli, binhost, branding, customize, estimate, fixes as fixes_, formhelp, gentoo, presets, recipe as recipes, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT = ROOT / "recipes" / "example.toml"
@@ -90,6 +90,106 @@ class Columns(QGridLayout):
         self.setRowStretch(self.row + 1, 1)
 
 
+class CustomizeDialog(QDialog):
+    """A change to a program's source: `customize` (draft only) in the background, the patch shown;
+    Keep it saves it with the recipe (customize.keep)."""
+
+    def __init__(self, parent: QWidget, recipe_path: Path, packages: list[str]):
+        super().__init__(parent)
+        self.setWindowTitle("Change a program's source with Claude")
+        self.resize(1000, 700)
+        self.recipe_path, self.kept, self.patch = recipe_path, "", ""
+        self.process: QProcess | None = None
+        self.output = ""
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.package = QComboBox(editable=False)
+        self.package.addItems(packages)
+        self.instruction = QPlainTextEdit(placeholderText="e.g. Add the line 'Hello world from Odyssey' to the output "
+                                                          "of nano --version")
+        self.instruction.setMaximumHeight(80)
+        self.check = QLineEdit(placeholderText="optional, e.g. nano --version | grep -q 'Hello world from Odyssey'")
+        form.addRow("Program", self.package)
+        form.addRow("Instruction", self.instruction)
+        form.addRow("Check after building", self.check)
+        layout.addLayout(form)
+        layout.addWidget(QLabel("Portage fetches exactly the version the build compiles; Claude may only read and edit "
+                                "that copy. It takes a few minutes and costs some cents (more for a big program).",
+                                wordWrap=True))
+        self.status = QLabel(wordWrap=True)
+        layout.addWidget(self.status)
+        self.text = QPlainTextEdit(readOnly=True)
+        self.text.setFont(QFont("monospace", 9))
+        self.text.setStyleSheet(OUTPUT_STYLE)
+        self.text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(self.text)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.write_button = QPushButton("Write the change")
+        self.write_button.clicked.connect(self.write)
+        self.keep_button = QPushButton("Keep it")
+        self.keep_button.setEnabled(False)
+        self.keep_button.clicked.connect(self.keep)
+        cancel = QPushButton("Throw it away")
+        cancel.clicked.connect(self.reject)
+        for b in (self.write_button, self.keep_button, cancel):
+            buttons.addWidget(b)
+        layout.addLayout(buttons)
+        formhelp.explain(self)
+
+    def write(self) -> None:
+        instruction = self.instruction.toPlainText().strip()
+        if not instruction:
+            self.status.setText("Say what to change first.")
+            return
+        self.write_button.setEnabled(False)
+        self.keep_button.setEnabled(False)
+        self.status.setText("Fetching the source, then Claude reads and changes it… (a few minutes)")
+        self.text.clear()
+        self.output = ""
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(str(ROOT))
+        self.process.setProcessChannelMode(QProcess.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self._read)
+        self.process.finished.connect(lambda code, _status: self._written(code))
+        self.process.start("python3", ["-u", "-m", "lfsbuilder", "customize", str(self.recipe_path),
+                                       self.package.currentText(), instruction])
+
+    def _read(self) -> None:
+        self.output += bytes(self.process.readAllStandardOutput()).decode(errors="replace")
+        self.text.setPlainText(self.output)
+        self.text.moveCursor(QTextCursor.End)
+
+    def _written(self, code: int) -> None:
+        self.write_button.setEnabled(True)
+        self.write_button.setText("Write it again")
+        start, end = "----- the change -----\n", "----- end of the change -----"
+        if code != 0 or start not in self.output:
+            self.status.setText("No change: " + (self.output.strip().splitlines() or ["Claude Code didn't answer."])[-1])
+            return
+        self.patch = self.output.split(start, 1)[1].split(end, 1)[0]
+        said = next((l for l in self.output.splitlines() if l.startswith("Claude changed:")), "")
+        self.status.setText(f"{said}\nRead the change below: Keep it, or change the instruction and write it again.")
+        self.text.setPlainText(self.patch)
+        self.keep_button.setEnabled(True)
+
+    def keep(self) -> None:
+        try:
+            customize.keep(self.recipe_path, self.package.currentText(), self.instruction.toPlainText(),
+                           self.check.text(), self.patch)
+        except (customize.CustomizeError, recipes.RecipeError) as error:
+            self.status.setText(f"Not kept: {error}")
+            return
+        self.kept = self.package.currentText()
+        self.accept()
+
+    def reject(self) -> None:
+        if self.process and self.process.state() != QProcess.NotRunning:
+            self.process.kill()
+            self.process.waitForFinished(3000)
+        super().reject()
+
+
 class LogoDialog(QDialog):
     """Draw a logo with Claude: `draw-logo` (logo.py) in the background, then its pictures shown.
     A folder this window made and didn't use is removed again."""
@@ -136,6 +236,7 @@ class LogoDialog(QDialog):
         for b in (self.draw_button, self.use_button, cancel):
             buttons.addWidget(b)
         layout.addLayout(buttons)
+        formhelp.explain(self)
 
     def draw(self) -> None:
         name, description = self.name.text().strip(), self.description.toPlainText().strip()
@@ -324,6 +425,7 @@ class Form(QMainWindow):
         self.watch = QTimer(self, interval=2000)
         self.watch.timeout.connect(self._watch_step)
         self.load(path)
+        formhelp.explain(self)  # an ⓘ and a plain-words tooltip on every field, box and button
 
     # The pages
 
@@ -473,7 +575,7 @@ class Form(QMainWindow):
             checks = []
             for i, s in enumerate(members):
                 check = QCheckBox(s.label)
-                check.setToolTip(s.package + (f" (starts {s.service} at boot)" if s.service else ""))
+                check.setToolTip(formhelp.software_tip(s.label, s.package, s.group, s.service))
                 grid.addWidget(check, i % rows, i // rows)
                 self.software_boxes[s.package] = check
                 checks.append(check)
@@ -487,6 +589,28 @@ class Form(QMainWindow):
         self.other_packages.setMaximumHeight(110)
         column.addWidget(self.other_packages)
         layout.addWidget(other)
+
+        changes = QGroupBox("Customizations: changes to a program's source code")
+        column = QVBoxLayout(changes)
+        column.addWidget(QLabel("Say in words what to change in one of the recipe's programs: Claude writes the change, "
+                                "you read it, and the build compiles that program with it (only that one). Saved "
+                                "beside the recipe, on this PC.", wordWrap=True))
+        self.custom_table = QTableWidget(0, 3)
+        self.custom_table.setHorizontalHeaderLabels(["Package", "Instruction", "Check after building"])
+        self.custom_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.custom_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.custom_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.custom_table.setMaximumHeight(130)
+        column.addWidget(self.custom_table)
+        row = QHBoxLayout()
+        for label, slot in (("Add a change with Claude…", self.add_customization),
+                            ("Show the change", self.show_customization), ("Remove", self.remove_customization)):
+            b = QPushButton(label)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        row.addStretch()
+        column.addLayout(row)
+        layout.addWidget(changes, span=3)
         layout.addStretch()
         return page
 
@@ -614,6 +738,12 @@ class Form(QMainWindow):
             return
         self.path, self.base = path, r
         self.path_label.setText(f"Recipe: {path}")
+        self.custom_table.setRowCount(0)
+        for c in r.customizations:
+            row = self.custom_table.rowCount()
+            self.custom_table.insertRow(row)
+            for column, text in enumerate((c.package, c.instruction, c.check)):
+                self.custom_table.setItem(row, column, QTableWidgetItem(text))
         self.name.setText(r.name)
         self.version.setText(r.version)
         if self.branding.findText(r.branding) < 0:
@@ -767,7 +897,11 @@ class Form(QMainWindow):
     # Files
 
     def _write(self, path: Path) -> bool:
-        text = recipes.dump(self.recipe())
+        r = self.recipe()
+        text = recipes.dump(r)
+        old, new = fixes_.paths(self.path)[1], fixes_.paths(path)[1]
+        if r.customizations and path != self.path and old.is_dir() and not new.exists():
+            shutil.copytree(old, new)  # (Save as: the customizations' patches go with the recipe)
         path.write_text(text)
         try:
             recipes.load(path)  # the same checks as the command line
@@ -901,6 +1035,46 @@ class Form(QMainWindow):
         timer.start()
         refresh()
         dialog.exec()
+
+    def _selected_customization(self) -> str:
+        row = self.custom_table.currentRow()
+        return self.custom_table.item(row, 0).text() if row >= 0 and self.custom_table.item(row, 0) else ""
+
+    def add_customization(self) -> None:
+        if not self.save():
+            return
+        r = recipes.load(self.path)
+        dialog = CustomizeDialog(self, self.path, sorted(set(r.packages)))
+        if dialog.exec() == QDialog.Accepted:
+            self.load(self.path)
+            self.progress.setText(f"{dialog.kept} is customized: Build compiles it with the change.")
+
+    def show_customization(self) -> None:
+        package = self._selected_customization()
+        if not package:
+            return
+        patch = fixes_.paths(self.path)[1] / package / recipes.CUSTOM_PATCH
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"The change to {package}")
+        dialog.resize(900, 520)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit(readOnly=True)
+        text.setFont(QFont("monospace", 9))
+        text.setStyleSheet(OUTPUT_STYLE)
+        text.setPlainText(patch.read_text() if patch.is_file() else "(no patch)")
+        layout.addWidget(QLabel(str(patch)))
+        layout.addWidget(text)
+        dialog.exec()
+
+    def remove_customization(self) -> None:
+        package = self._selected_customization()
+        if not package or not self.save():
+            return
+        if QMessageBox.question(self, "lfsbuilder", f"Remove the change to {package}? "
+                                "The next build installs it as Gentoo ships it.") != QMessageBox.Yes:
+            return
+        customize.remove(self.path, package)
+        self.load(self.path)
 
     def draw_logo(self) -> None:
         """The logo window: a description, Claude's drawing, its pictures; Use it picks it."""

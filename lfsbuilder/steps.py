@@ -35,7 +35,7 @@ import shlex
 from pathlib import Path
 
 from . import binhost, branding, calamares, fixes as fixes_, overlay
-from .recipe import Recipe
+from .recipe import CUSTOM_PATCH, Recipe
 
 EMERGE_OPTS = "--usepkg --binpkg-respect-use=y --with-bdeps=y"  # the build adds --jobs (runner.Shared)
 
@@ -103,10 +103,29 @@ def world() -> Step:
     return Step("world", "The system brought up to the repository", "set -e\nemerge --update --deep --newuse --verbose @world\n")
 
 
-def package(atom: str) -> Step:
+def package(atom: str, custom=None) -> Step:
     # --oneshot: not in the world file; argo-meta (the argo step) holds the recipe's packages there,
     # so one taken out of the recipe goes from installed systems with --depclean.
-    return Step(atom.replace("/", "_"), atom, f"set -e\nemerge --noreplace --oneshot --verbose {shlex.quote(atom)}\n", package=atom)
+    if custom is None:
+        return Step(atom.replace("/", "_"), atom, f"set -e\nemerge --noreplace --oneshot --verbose {shlex.quote(atom)}\n",
+                    package=atom)
+    # A customized package (recipe.Customization): its patch where Portage applies a user's patches
+    # (eapply_user), compiled even when a binary of the same version and USE exists (Gentoo's, or the
+    # unpatched one in our own cache: either would win, and the patch be silently left out), and
+    # installed again even when it is there already (nano comes with the stage3: --noreplace would
+    # skip it). Then the owner's check, which fails the step if the change isn't in the program.
+    script = "set -e\n" + patch_script(atom, CUSTOM_PATCH, custom.patch)
+    script += f"emerge --oneshot --verbose {shlex.quote(atom)}\n"
+    if custom.check:
+        script += f"# the customization's check\n{custom.check}\n"
+    return Step(atom.replace("/", "_"), f"{atom} (customized)", script, package=atom)
+
+
+def patch_script(atom: str, name: str, text: str) -> str:
+    """A patch for Portage to apply to the package, and no binaries of it in this step."""
+    directory = f"/etc/portage/patches/{atom}"
+    return (f"mkdir -p {directory}\ncat > {directory}/{name} << 'LFSBUILDER_PATCH_EOF'\n{text.rstrip()}\n"
+            f"LFSBUILDER_PATCH_EOF\nexport EMERGE_DEFAULT_OPTS=\"${{EMERGE_DEFAULT_OPTS:-}} --usepkg-exclude {atom}\"\n")
 
 
 def kernel(r: Recipe) -> Step:
@@ -344,7 +363,11 @@ def all_steps(r: Recipe) -> list[Step]:
     enabled = services(r)
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
-    steps = [portage(r), world(), kernel(r), system(r), *(package(a) for a in packages),
+    custom = {c.package: c for c in r.customizations}
+    missing = [c for c in custom if c not in packages]
+    if missing:
+        raise fixes_.FixError(f"a customization is for {', '.join(missing)}, which isn't one of the recipe's packages")
+    steps = [portage(r), world(), kernel(r), system(r), *(package(a, custom.get(a)) for a in packages),
              *([enabled] if enabled else []), users(r), argo(r), installer(r), *([updates(r)] if r.binhost else [])]
     # Each fix goes in at the start of the step it was found in (fixes.py).
     names = {s.name for s in steps}

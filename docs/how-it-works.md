@@ -223,6 +223,19 @@ A program added to the recipe arrives on the PCs this way: the distribution's pa
 - **Publish at least every 30 days**, even with no change. Otherwise installed PCs refuse the distribution's repository as too old. The form shows the last publish date, in red when the limit is near.
 - **Back up `work/binhost/gnupg`**: it holds the signing key. Without it, installed PCs won't accept your updates.
 
+## Changing a program's source code
+
+You can ask for a change to any of the recipe's programs in words, and that one program is compiled with it; everything else still comes as binaries.
+
+1. On the **Desktop and software** tab, in **Customizations**, press **Add a change with Claude…**.
+2. Choose the program, write the instruction (for example *Add the line 'Hello world from Odyssey' to the output of nano --version*) and, if you like, a **check**: a command that must succeed in the built system (`nano --version | grep -q 'Hello world from Odyssey'`).
+3. **Write the change**: Portage fetches exactly the version the build compiles, Claude reads and edits that copy (it can only read and edit files there), and lfsbuilder makes the patch itself. You see the patch.
+4. **Keep it**: the patch is saved beside the recipe (`recipes/<recipe>.patches/<package>/customization.patch`, on your PC only). **Build** then compiles that program with it, never takes a ready-made binary of it, and runs the check: if the change isn't there, the step fails.
+
+From a terminal: `python3 -m lfsbuilder customize recipes/myxfce.toml app-editors/nano "Add the line ..." --check "..." --keep`.
+
+A newer Gentoo version can make a patch stop applying (the program's code moved): the step then fails, and writing the change again from the same instruction makes a new one. A small program compiles in a minute (nano: 76 s); Firefox takes 1.5–3 hours.
+
 ## Good to know
 
 - **The logo and the label are the recipe's.** On the form's System page, **Logo** picks a folder in `branding/` and **Label** sets the words beside the logo (empty: the distribution name; the first word is bold). lfsbuilder draws every picture from them (the icons, the login screens, the wallpaper, GRUB's background) the next time you press Check or Build, and keeps them in `branding/<logo>/pictures/`. A new logo is a new folder `branding/<name>/` with two drawings: `logo.svg` for light backgrounds and `logo-light.svg` for dark ones (square, 256 × 256). Or let Claude draw it: **Draw a logo with Claude…** beside Logo asks for a folder name and a description ("an owl in flight over the sea at night, gold and dark blue"), shows the login screen and the icon, and **Use it** chooses it; each drawing costs a few cents. The same from a terminal: `python3 -m lfsbuilder draw-logo owl "an owl ..." --label "Owl Linux"`. Internal names (`argo-myxfce-release`, `argo.git`) are never seen by users.

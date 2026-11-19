@@ -28,6 +28,19 @@ class Account:
 
 
 @dataclasses.dataclass
+class Customization:
+    """A change to a package's source code, asked for in words ([[customizations]]): Claude wrote
+    it as a patch (customize.py), kept beside the recipe; the build compiles the package with it."""
+    package: str
+    instruction: str
+    check: str = ""  # a shell command run after the package is built; the step fails if it does
+    patch: str = ""  # the patch's text, from <recipe>.patches/<package>/customization.patch
+
+
+CUSTOM_PATCH = "customization.patch"
+
+
+@dataclasses.dataclass
 class Recipe:
     path: Path
     name: str
@@ -60,6 +73,7 @@ class Recipe:
     graphical_installer: bool = False  # [installer] graphical: Calamares on the live desktop (calamares.py)
     branding: str = "argo"  # [distribution] branding: the folder branding/<branding>/ with its logo (branding.py)
     label: str = ""         # [distribution] label: the words beside the logo; empty = the name
+    customizations: list[Customization] = dataclasses.field(default_factory=list)
     fixes: list = dataclasses.field(default_factory=list)  # fixes.Fix, from <name>.fixes.toml beside the recipe
 
     @property
@@ -112,6 +126,7 @@ _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FULL_NAME = re.compile(r"^[^:,\n]*$")
 # The name and version reach GRUB's configuration, os-release and the console's banner.
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$")
+_CHECK = re.compile(r"^[^\n\r\0]{0,300}$")  # one line: it goes into the package's step as it is
 _BRANDING = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 # A distribution's own drawings (branding.py composes the rest from them and the label).
 BRANDING_ROOT = Path(__file__).resolve().parent.parent / "branding"
@@ -262,6 +277,22 @@ def load(path: Path) -> Recipe:
         problems.append("output.format can only be \"qemu\" for now")
     if recipe.root_password and not _HASH.match(recipe.root_password):
         problems.append("users.root_password must be a password hash (python3 -m lfsbuilder password), not a password")
+    raw_custom = data.get("customizations", [])
+    if not isinstance(raw_custom, list) or not all(isinstance(c, dict) for c in raw_custom):
+        problems.append("customizations must be a list of tables ([[customizations]])")
+        raw_custom = []
+    for c in raw_custom:
+        custom = Customization(package=str(c.get("package", "")), instruction=str(c.get("instruction", "")),
+                               check=str(c.get("check", "")))
+        if not _ATOM.match(custom.package):
+            problems.append(f"customizations: {custom.package!r} isn't a package (category/name)")
+        elif [x.package for x in recipe.customizations].count(custom.package):
+            problems.append(f"customizations: {custom.package} is there twice (one change per package; say it all in one)")
+        if not custom.instruction.strip() or len(custom.instruction) > 2000 or "\0" in custom.instruction:
+            problems.append(f"customizations {custom.package}: the instruction must be some words (up to 2000 characters)")
+        if not _CHECK.match(custom.check):
+            problems.append(f"customizations {custom.package}: check must be one line of shell (up to 300 characters)")
+        recipe.customizations.append(custom)
     names = [a.name for a in recipe.accounts]
     for a in recipe.accounts:
         if not _USER.match(a.name) or a.name == "root":
@@ -299,6 +330,19 @@ def load(path: Path) -> Recipe:
         recipe.fixes = fixes.load(path)
     except fixes.FixError as error:
         raise RecipeError(str(error)) from error
+    patches = fixes.paths(path)[1]
+    for custom in recipe.customizations:
+        patch_file = patches / custom.package / CUSTOM_PATCH
+        if not patch_file.is_file():
+            problems.append(f"customizations {custom.package}: no patch yet ({patch_file}): "
+                            f"python3 -m lfsbuilder customize {path} {custom.package} \"...\" --keep")
+            continue
+        custom.patch = patch_file.read_text()
+        problems += [f"customizations {custom.package}: {p}" for p in
+                     fixes.Fix(step="x", kind="patch", package=custom.package, values=[CUSTOM_PATCH], why="", by="claude",
+                               patch=custom.patch).problems()]
+    if problems:
+        raise RecipeError(f"{path}:\n  " + "\n  ".join(problems))
     return recipe
 
 
@@ -368,4 +412,7 @@ def dump(r: Recipe) -> str:
         out += ["", "[installer]", "graphical = true"]
     out += ["", "[output]"]
     out += [f"{key} = {value if isinstance(value, int) else _s(str(value))}" for key, value in r.output.items()]
+    for c in r.customizations:  # (each one's patch is a file beside the recipe, not in it)
+        out += ["", "[[customizations]]", f"package = {_s(c.package)}", f"instruction = {_s(c.instruction)}",
+                *([f"check = {_s(c.check)}"] if c.check else [])]
     return "\n".join(out) + "\n"
