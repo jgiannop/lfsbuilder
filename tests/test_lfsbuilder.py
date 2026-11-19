@@ -503,22 +503,27 @@ class Branding(unittest.TestCase):
                     self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"), name)
 
     def test_the_name_logo_and_label_are_the_recipes(self):
-        r = recipe.load(RECIPES / "myxfce.toml")
-        self.assertEqual((r.branding, r.label_text), ("odyssey", "Odyssey Linux"))
-        self.assertEqual(branding.pictures_dir(r), ROOT / "branding" / "odyssey" / "pictures" / "odyssey-linux")
+        # (Only Argo's logo is in git: a user's logos and recipes stay on their PC, .gitignore.)
         argo = recipe.load(RECIPES / "xfce.toml")
-        self.assertNotEqual(branding.pictures(r)[branding.BACKGROUND], branding.pictures(argo)[branding.BACKGROUND])
-        files = overlay.files(r)
-        self.assertEqual(files["argo-base/argo-myxfce-release/files/argo-256.png"], branding.pictures(r)["argo-256.png"])
-        self.assertEqual(json.loads(files["argo-base/argo-myxfce-release/files/wallpaper-metadata.json"])["KPlugin"]["Name"],
+        self.assertEqual((argo.branding, argo.label_text), ("argo", "Argo Linux"))
+        self.assertEqual(branding.pictures_dir(argo), ROOT / "branding" / "argo" / "pictures" / "argo-linux")
+        # Another name with Argo's look: the texts follow the name, the pictures the label.
+        named = dataclasses.replace(argo, name="Odyssey Linux", label="Argo Linux")
+        files = overlay.files(named)
+        self.assertEqual(files["argo-base/argo-xfce-release/files/argo-256.png"], branding.pictures(argo)["argo-256.png"])
+        self.assertEqual(json.loads(files["argo-base/argo-xfce-release/files/wallpaper-metadata.json"])["KPlugin"]["Name"],
                          "Odyssey Linux")
-        labelled = dataclasses.replace(r, label="Odyssey")
+        self.assertIn(b'NAME="Odyssey Linux"', files["argo-base/argo-xfce-release/files/os-release"])
+        # A new label or logo: drawn again before anything is planned; until then nothing plans.
+        labelled = dataclasses.replace(argo, branding="odyssey", label="Odyssey")
         self.assertEqual(labelled.label_text, "Odyssey")
-        self.assertNotEqual(branding.stamp(labelled), branding.stamp(r))  # a new label: drawn again
+        self.assertNotEqual(branding.stamp(argo), branding.stamp(dataclasses.replace(argo, label="Argo")))
         dumped = recipe.dump(labelled)  # what the form saves
         self.assertIn('branding = "odyssey"\n', dumped)
         self.assertIn('label = "Odyssey"\n', dumped)
         self.assertNotIn("branding =", recipe.dump(argo))  # Argo's is the default
+        with self.assertRaises(branding.BrandingError):
+            branding.pictures(dataclasses.replace(argo, label="Not Drawn Yet"))
 
     def test_the_wordmark_fits_its_label(self):
         logo = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"/>'
@@ -539,7 +544,6 @@ class Branding(unittest.TestCase):
                 '<defs><linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient></defs>'
                 '<title>Owl</title><circle cx="128" cy="128" r="80" fill="url(#g)"/></svg>')
         self.assertEqual(logo.problems(good), [])
-        self.assertEqual(logo.problems((ROOT / "branding" / "odyssey" / "logo.svg").read_text()), [])
         for bad, why in (
             (good.replace("<title>Owl</title>", "<script>alert(1)</script>"), "<script> isn't allowed"),
             (good.replace("<title>Owl</title>", "<text>Owl</text>"), "<text> isn't allowed"),

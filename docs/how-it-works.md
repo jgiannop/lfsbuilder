@@ -50,6 +50,8 @@ The recipe is the only input: the same recipe always gives the same system. Crea
 
 **Where and how to name it.** Recipes live in the `recipes/` folder. The file name is the recipe's name: lower-case letters, digits and `_`, ending in `.toml` (`myxfce.toml` yes, `My-Xfce.toml` no). It also names the build folder (`work/build-myxfce/`) and the ISO (`myxfce.iso`).
 
+**Your recipes and logos stay on your PC.** Git (lfsbuilder's repository) holds only the tool: the five example recipes (example, gnome, plasma, xfce, openrc) and Argo's logo, the default. Your own recipes in `recipes/` and logos in `branding/` are left out by `.gitignore`, so they never show up as changes. Back them up yourself, together with `work/binhost/gnupg` (your signing key).
+
 **Start the form** on an existing recipe, then use **Save as…** so the original stays untouched:
 
 ```
@@ -68,7 +70,7 @@ Everything the form shows is safe to change; what it doesn't show is kept as it 
 
 **Package names.** Programs outside the checkboxes go in "Other packages" with Gentoo's name, `category/name` (for example `media-video/vlc`). Find them by searching [packages.gentoo.org](https://packages.gentoo.org).
 
-**What lfsbuilder checks.** Every value is checked before anything runs, because many end up in shell scripts. A host name like `my pc; rm -rf /` is refused, and so is a plain password: recipes hold only password hashes, since they go into git. A time zone is checked only for its shape, so a wrong one is caught later, at the build's `system` step.
+**What lfsbuilder checks.** Every value is checked before anything runs, because many end up in shell scripts. A host name like `my pc; rm -rf /` is refused, and so is a plain password: recipes hold only password hashes, since recipes get shared (the examples are in git). A time zone is checked only for its shape, so a wrong one is caught later, at the build's `system` step.
 
 **Comments.** The form doesn't keep the comments of a recipe it saves. The build doesn't need them.
 

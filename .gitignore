@@ -2,3 +2,15 @@
 __pycache__/
 *.pyc
 .venv/
+
+# A distribution's own logo and recipe are its owner's, kept on this PC only (back them up, with
+# work/binhost/gnupg): only Argo's logo (the default) and the example recipes belong to the tool.
+/branding/*
+!/branding/argo/
+/recipes/*
+!/recipes/keys/
+!/recipes/example.*
+!/recipes/gnome.*
+!/recipes/plasma.*
+!/recipes/xfce.*
+!/recipes/openrc.*
