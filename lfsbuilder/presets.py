@@ -64,7 +64,7 @@ class Software:
 
 # The groups the form shows the software in, in this order.
 GROUPS = ("Internet", "Office", "Multimedia", "Graphics", "Editors and development", "System tools",
-          "Terminal and utilities")
+          "Terminal and utilities", "KDE apps")
 
 # Every package here has a stable amd64 version in the pinned tree (checked 2026-11-19 against
 # e19f4a84) and a licence Gentoo accepts by default. The order is the recipe's package order (the
@@ -160,6 +160,35 @@ SOFTWARE = (
     Software("net-analyzer/wireshark", "Wireshark (network analyser)", group="Terminal and utilities"),
     Software("net-vpn/wireguard-tools", "WireGuard (VPN)", group="Terminal and utilities"),
     Software("net-vpn/openvpn", "OpenVPN (VPN)", group="Terminal and utilities"),
+    # KDE apps (checked 2026-11-19 against e19f4a84: KDE Gear 26.08, stable); best with Plasma, they run elsewhere too
+    Software("kde-apps/kcalc", "KCalc (calculator)", group="KDE apps"),
+    Software("kde-apps/kate", "Kate (text and code editor)", group="KDE apps"),
+    Software("kde-apps/kwrite", "KWrite (simple text editor)", group="KDE apps"),
+    Software("kde-apps/gwenview", "Gwenview (image viewer)", group="KDE apps"),
+    Software("kde-plasma/spectacle", "Spectacle (screenshots)", group="KDE apps"),
+    Software("kde-apps/ark", "Ark (archives: zip, tar…)", group="KDE apps"),
+    Software("kde-apps/kolourpaint", "KolourPaint (simple painting)", group="KDE apps"),
+    Software("media-sound/elisa", "Elisa (music player)", group="KDE apps"),
+    Software("media-video/haruna", "Haruna (video player)", group="KDE apps"),
+    Software("kde-apps/kdenlive", "Kdenlive (video editor)", group="KDE apps"),
+    Software("sys-block/partitionmanager", "KDE Partition Manager (disks)", group="KDE apps"),
+    Software("kde-apps/filelight", "Filelight (what fills the disk)", group="KDE apps"),
+    Software("kde-apps/kfind", "KFind (find files)", group="KDE apps"),
+    Software("kde-apps/kcharselect", "KCharSelect (special characters)", group="KDE apps"),
+    Software("kde-apps/sweeper", "Sweeper (clean traces)", group="KDE apps"),
+    Software("kde-misc/kdeconnect", "KDE Connect (your phone and the PC)", group="KDE apps"),
+    Software("kde-apps/kmail", "KMail (email)", group="KDE apps"),
+    Software("kde-apps/korganizer", "KOrganizer (calendar)", group="KDE apps"),
+    Software("net-irc/konversation", "Konversation (IRC chat)", group="KDE apps"),
+    Software("kde-apps/krdc", "KRDC (remote desktop)", group="KDE apps"),
+    Software("net-p2p/ktorrent", "KTorrent (torrents)", group="KDE apps"),
+    Software("kde-apps/kompare", "Kompare (compare files)", group="KDE apps"),
+    Software("kde-apps/yakuake", "Yakuake (drop-down terminal)", group="KDE apps"),
+    Software("kde-misc/kclock", "KClock (clocks and alarms)", group="KDE apps"),
+    Software("kde-misc/kweather", "KWeather (weather)", group="KDE apps"),
+    Software("kde-apps/kpat", "KPatience (card games)", group="KDE apps"),
+    Software("kde-apps/kmines", "KMines (minesweeper)", group="KDE apps"),
+    Software("kde-apps/kmahjongg", "KMahjongg (mahjong)", group="KDE apps"),
 )
 
 LOCALES = ("en_US.UTF-8", "en_GB.UTF-8", "el_GR.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "es_ES.UTF-8", "it_IT.UTF-8")

@@ -165,6 +165,9 @@ BOXES = {
     "Editors and development": "Text and code editors, programming languages, containers and virtual machines.",
     "System tools": "Disks, backups, printing, passwords, remote login and system monitors.",
     "Terminal and utilities": "Terminals and command-line tools: downloads, archives, searching, networks and VPNs.",
+    "KDE apps": (
+        "KDE's own applications (KDE Gear): calculator, editors, viewers, games and more. They fit KDE Plasma best "
+        "(same look, same settings), and run on other desktops too, pulling in some KDE libraries."),
     "Other packages": (
         "Any other Gentoo package, one per line, as <i>category/name</i> (like <i>games-puzzle/sgt-puzzles</i>). "
         "Find names at <i>packages.gentoo.org</i>. <b>Check</b> tells if it fits your choices."),
