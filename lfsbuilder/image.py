@@ -28,6 +28,7 @@ import time
 import zlib
 from pathlib import Path
 
+from . import branding
 from .recipe import Recipe
 
 DOCKER_FILES = {"etc/hostname", "etc/hosts", "etc/resolv.conf", "etc/fstab", ".dockerenv"}
@@ -50,7 +51,7 @@ def system_files(r: Recipe, live: bool = False) -> dict[str, tuple[str, str]]:
         "etc/hosts": ("file", f"127.0.0.1  localhost\n::1        localhost\n127.0.1.1  {fqdn} {r.hostname}\n"),
         "etc/fstab": ("file", f"# Written by lfsbuilder\n{root}"),
     }
-    # os-release and /etc/issue (who the system is) come from argo-base/argo-release (overlay.py).
+    # os-release and /etc/issue (who the system is) come from the release package (overlay.py).
     if r.init == "systemd":
         files["etc/resolv.conf"] = ("link", "../run/systemd/resolve/stub-resolv.conf")
         # The system makes its machine id at first boot (the build removes the image's). The file must be
@@ -193,7 +194,7 @@ def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Pat
     (tree / "boot" / "initramfs.img").write_bytes(initramfs.read_bytes())
     volume = volume_id(r)
     (tree / "boot" / "grub" / "grub.cfg").write_text(GRUB_CFG.format(title=f"{r.name} {r.version}", volume=volume))
-    (tree / "boot" / "grub" / "argo.png").write_bytes(GRUB_BACKGROUND.read_bytes())
+    (tree / "boot" / "grub" / "argo.png").write_bytes(branding.pictures(r)[branding.GRUB])
     tools.run("sh", "-c", 'sqfstar -quiet -no-progress -comp zstd -root-uid 0 -root-gid 0 -root-mode 0755 "$1" < "$2"', "sh",
               tools.inside(tree / "LiveOS" / "squashfs.img"), tools.inside(rootfs))
     if problem := root_problem(*squashfs_root(tools, tree / "LiveOS" / "squashfs.img")):
@@ -284,7 +285,6 @@ def _guid(raw: bytes) -> str:
     return f"{a:08x}-{b:04x}-{c:04x}-{raw[8:10].hex()}-{raw[10:16].hex()}"
 
 
-GRUB_BACKGROUND = Path(__file__).resolve().parent.parent / "branding" / "argo-grub-1024x768.png"
 OVMF = Path("/usr/share/ovmf/OVMF.fd")  # UEFI firmware for QEMU (Debian/Ubuntu's ovmf package)
 KVM_FAILED = b"KVM: entry failed"
 MEMORY_MB = 4096  # a desktop needs more than 2 GB

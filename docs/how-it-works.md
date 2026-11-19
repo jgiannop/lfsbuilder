@@ -59,7 +59,7 @@ cd ~/dev/lfsbuilder
 
 | Form page | What you choose there |
 | --- | --- |
-| System | Distribution name and version, update server, systemd or OpenRC, processor, kernel, language, time zone, keyboard, host name, network |
+| System | Distribution name and version, logo and label, update server, systemd or OpenRC, processor, kernel, language, time zone, keyboard, host name, network |
 | Desktop and software | None, GNOME, KDE Plasma or Xfce; programs as checkboxes in plain words (Firefox, LibreOffice, VLC, nano, Vim, tmux, htop, Git, OpenSSH) |
 | Users | Accounts (Add, Remove, Set password…), root's password, sudo for administrators |
 | Advanced | USE flags and compiler flags; not needed for a normal distribution |
@@ -223,7 +223,7 @@ A program added to the recipe arrives on the PCs this way: the distribution's pa
 
 ## Good to know
 
-- **The name changes the texts, not the pictures.** With `name = "Odyssey Linux"`, the menus, GRUB, the installer and `/etc/os-release` say Odyssey. The logo, wallpapers and login-screen wordmark still show the Argo ship and "Argo Linux": the pictures don't follow the name yet. Internal names (`argo-release`, `argo.git`) are never seen by users.
+- **The logo and the label are the recipe's.** On the form's System page, **Logo** picks a folder in `branding/` and **Label** sets the words beside the logo (empty: the distribution name; the first word is bold). lfsbuilder draws every picture from them (the icons, the login screens, the wallpaper, GRUB's background) the next time you press Check or Build, and keeps them in `branding/<logo>/pictures/`. A new logo is a new folder `branding/<name>/` with two drawings: `logo.svg` for light backgrounds and `logo-light.svg` for dark ones (square, 256 × 256). Or let Claude draw it: **Draw a logo with Claude…** beside Logo asks for a folder name and a description ("an owl in flight over the sea at night, gold and dark blue"), shows the login screen and the icon, and **Use it** chooses it; each drawing costs a few cents. The same from a terminal: `python3 -m lfsbuilder draw-logo owl "an owl ..." --label "Owl Linux"`. Internal names (`argo-myxfce-release`, `argo.git`) are never seen by users.
 - **VirtualBox and QEMU don't run well together.** Close VirtualBox before Boot test or Make ISO.
 - **Found on this walk-through:** `check` failed with "No such file or directory" for `/etc/portage/package.use/zz-lfsbuilder-check`, a leftover from moving USE flags into the distribution's profile. Fixed the same day.
 - **The form runs the command line.** The top line of its output box shows the exact command, which you can also type in a terminal from `~/dev/lfsbuilder`:

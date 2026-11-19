@@ -58,6 +58,8 @@ class Recipe:
     binhost: str = ""      # [updates] server: the base URL of the distribution's binary package server
     binhost_key: str = ""  # [updates] key: its signing key (public), a file beside the recipe
     graphical_installer: bool = False  # [installer] graphical: Calamares on the live desktop (calamares.py)
+    branding: str = "argo"  # [distribution] branding: the folder branding/<branding>/ with its logo (branding.py)
+    label: str = ""         # [distribution] label: the words beside the logo; empty = the name
     fixes: list = dataclasses.field(default_factory=list)  # fixes.Fix, from <name>.fixes.toml beside the recipe
 
     @property
@@ -75,6 +77,11 @@ class Recipe:
     def os_id(self) -> str:
         """The distribution's ID in os-release: "Argo Linux" -> "argo-linux"."""
         return re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
+
+    @property
+    def label_text(self) -> str:
+        """The words beside the logo in the pictures: the label, or else the name."""
+        return self.label or self.name
 
     @property
     def short_name(self) -> str:
@@ -105,6 +112,10 @@ _USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _FULL_NAME = re.compile(r"^[^:,\n]*$")
 # The name and version reach GRUB's configuration, os-release and the console's banner.
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$")
+_BRANDING = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+# A distribution's own drawings (branding.py composes the rest from them and the label).
+BRANDING_ROOT = Path(__file__).resolve().parent.parent / "branding"
+BRANDING_FILES = ("logo.svg", "logo-light.svg")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
 _URL = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)*/$")
 _KEY_PATH = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*\.asc$")
@@ -141,6 +152,8 @@ def load(path: Path) -> Recipe:
         path=path,
         name=str(dist.get("name", "Argo Linux")),
         version=str(dist.get("version", "0.1")),
+        branding=str(dist.get("branding", "argo")),
+        label=str(dist.get("label", "")),
         init=str(base.get("init", "systemd")),
         stage3=str(base.get("stage3", "")),
         repository=str(base.get("repository", "")),
@@ -185,6 +198,12 @@ def load(path: Path) -> Recipe:
 
     if not _NAME.match(recipe.name) or not re.search(r"[a-z0-9]", recipe.name.lower()):
         problems.append(f"distribution.name {recipe.name!r}: letters, digits, spaces and . _ + - (up to 40)")
+    if recipe.label and (not _NAME.match(recipe.label) or not re.search(r"[a-z0-9]", recipe.label.lower())):
+        problems.append(f"distribution.label {recipe.label!r}: letters, digits, spaces and . _ + - (up to 40)")
+    if not _BRANDING.match(recipe.branding):
+        problems.append(f"distribution.branding {recipe.branding!r}: a folder name in branding/ (lower-case letters, digits, _ and -)")
+    elif missing := [f for f in BRANDING_FILES if not (BRANDING_ROOT / recipe.branding / f).is_file()]:
+        problems.append(f"distribution.branding {recipe.branding!r}: branding/{recipe.branding}/ has no {', '.join(missing)}")
     if not _VERSION.match(recipe.version):
         problems.append(f"distribution.version {recipe.version!r}: letters, digits and . _ + -, no spaces")
     if recipe.init not in INITS:
@@ -300,6 +319,8 @@ def dump(r: Recipe) -> str:
         "[distribution]",
         f"name = {_s(r.name)}",
         f"version = {_s(r.version)}",
+        *([f"branding = {_s(r.branding)}"] if r.branding != "argo" else []),
+        *([f"label = {_s(r.label)}"] if r.label else []),
         "",
         "[base]",
         f"init = {_s(r.init)}",

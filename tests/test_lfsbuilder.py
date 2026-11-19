@@ -8,6 +8,7 @@ No Docker, no network: only what can be checked from the code itself.
 from __future__ import annotations
 
 import dataclasses
+import json
 import shutil
 import struct
 import tempfile
@@ -15,7 +16,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-from lfsbuilder import calamares, check, estimate, fixes, image, overlay, recipe, repair, runner, steps
+from lfsbuilder import branding, calamares, logo, check, estimate, fixes, image, overlay, recipe, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPES = ROOT / "recipes"
@@ -370,15 +371,16 @@ class Overlay(unittest.TestCase):
     """The argo repository (overlay.py): what carries the recipe to installed systems."""
 
     def release(self, name: str) -> str:
-        return overlay.files(recipe.load(RECIPES / f"{name}.toml"))[f"argo-base/argo-release/argo-release-0.1.ebuild"].decode()
+        return overlay.files(recipe.load(RECIPES / f"{name}.toml"))[
+            f"argo-base/argo-{name}-release/argo-{name}-release-0.1.ebuild"].decode()
 
     def test_the_system_says_its_own_name(self):
         r = recipe.load(RECIPES / "example.toml")
         files = overlay.files(r)
-        release = dict(line.split("=", 1) for line in files["argo-base/argo-release/files/os-release"].decode().splitlines())
+        release = dict(line.split("=", 1) for line in files["argo-base/argo-example-release/files/os-release"].decode().splitlines())
         self.assertEqual((release["NAME"], release["ID"], release["ID_LIKE"], release["PRETTY_NAME"], release["LOGO"]),
                          ('"Argo Linux"', '"argo-linux"', '"gentoo"', '"Argo Linux 0.1"', '"argo-linux"'))
-        self.assertIn(b"Argo Linux 0.1", files["argo-base/argo-release/files/issue"])
+        self.assertIn(b"Argo Linux 0.1", files["argo-base/argo-example-release/files/issue"])
         self.assertNotIn("etc/os-release", image.system_files(r))  # the package's, not the export's
         self.assertEqual(r.short_name, "Argo")
 
@@ -389,7 +391,7 @@ class Overlay(unittest.TestCase):
         self.assertIn(b"net-libs/ngtcp2 gnutls", files["profiles/argo/gnome/package.use"])
         self.assertIn(b"sys-kernel/installkernel dracut", files["profiles/argo/gnome/package.use"])
         meta = files["argo-base/argo-gnome/argo-gnome-0.1.ebuild"].decode()
-        for atom in ["argo-base/argo-release", *r.packages, "net-misc/networkmanager", "app-admin/sudo"]:
+        for atom in ["argo-base/argo-gnome-release", *r.packages, "net-misc/networkmanager", "app-admin/sudo"]:
             self.assertIn(f"\t{atom}\n", meta)
         self.assertNotIn("USE=", steps.make_conf(r))  # the profile's now
         portage = steps.portage(r).script
@@ -409,28 +411,28 @@ class Overlay(unittest.TestCase):
         with self.assertRaises(overlay.OverlayError):
             overlay.files(dataclasses.replace(r, version="0.1-beta"))
 
-    def test_each_desktop_is_a_use_flag_of_one_release_package(self):
-        # Recipes share one set of binary packages: Portage tells their argo-release builds apart by USE.
+    def test_each_recipe_has_its_own_release_package_and_desktops_are_its_use_flags(self):
+        # Recipes share one set of binary packages: one release package for all would mix up their names
+        # and looks (the same name and version, other pictures); each desktop's part is a USE flag.
         expected = {"example": [], "gnome": ["gdm"], "plasma": ["sddm", "plasma"], "xfce": ["lightdm", "xfce"], "openrc": []}
-        releases = set()
         for name, flags in expected.items():
             with self.subTest(name):
                 r = recipe.load(RECIPES / f"{name}.toml")
+                self.assertEqual(overlay.release_name(r), f"argo-base/argo-{name}-release")
                 self.assertEqual(overlay.release_flags(r), flags)
                 use = overlay.files(r)[f"profiles/argo/{name}/package.use"].decode()
-                self.assertEqual(f"argo-base/argo-release {' '.join(flags)}" in use, bool(flags))
-                releases.add(self.release(name))
-        self.assertEqual(len(releases), 1)  # the same ebuild for every recipe
-        ebuild = releases.pop()
-        for flag in overlay.DESKTOP_FLAGS:
-            self.assertIn(f"use {flag}", ebuild)
-        self.assertIn("LookAndFeelPackage=org.argolinux.desktop", ebuild)
-        self.assertIn("/etc/portage/env/xfce-base", ebuild)
+                self.assertEqual(f"argo-base/argo-{name}-release {' '.join(flags)}" in use, bool(flags))
+                self.assertIn(overlay.release_name(r), steps.argo(r).script)
+                ebuild = self.release(name)
+                for flag in overlay.DESKTOP_FLAGS:
+                    self.assertIn(f"use {flag}", ebuild)
+                self.assertIn("LookAndFeelPackage=org.argolinux.desktop", ebuild)
+                self.assertIn("/etc/portage/env/xfce-base", ebuild)
 
     def test_lightdm_starts_xfce(self):
         # Without it LightDM starts xinit's Xsession (first by name) and the login falls back to the greeter.
         files = overlay.files(recipe.load(RECIPES / "xfce.toml"))
-        self.assertEqual(files["argo-base/argo-release/files/lightdm-50-argo.conf"], b"[Seat:*]\nuser-session=xfce\n")
+        self.assertEqual(files["argo-base/argo-xfce-release/files/lightdm-50-argo.conf"], b"[Seat:*]\nuser-session=xfce\n")
         self.assertIn("/etc/lightdm/lightdm.conf.d", self.release("xfce"))
 
     def test_the_xfce_wallpaper_hook_is_given_its_root(self):
@@ -486,18 +488,82 @@ class Publishing(unittest.TestCase):
 
 
 class Branding(unittest.TestCase):
-    def test_the_logo_files_are_well_formed_and_rendered(self):
+    def test_every_recipe_has_its_pictures_drawn(self):
+        # Drawn by `python3 -m lfsbuilder branding RECIPE` (and before any command that plans), kept in git.
         import xml.dom.minidom
-        for svg in sorted((ROOT / "branding").glob("*.svg")):
-            with self.subTest(svg.name):
-                xml.dom.minidom.parse(str(svg))
-        for name in ("argo-background-1920x1080.png", "argo-background-plain-1920x1080.png", "argo-wordmark-light-440.png"):
-            with self.subTest(name):
-                png = (ROOT / "branding" / name).read_bytes()
-                self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-                svg = (ROOT / "branding" / name.replace("-1920x1080", "").replace("-440", "")).with_suffix(".svg")
-                self.assertGreaterEqual((ROOT / "branding" / name).stat().st_mtime, svg.stat().st_mtime,
-                                        f"{name} is older than {svg.name}: run branding/render.sh")
+        for folder in sorted(p for p in (ROOT / "branding").iterdir() if p.is_dir()):
+            for name in recipe.BRANDING_FILES:
+                with self.subTest(f"{folder.name}/{name}"):
+                    xml.dom.minidom.parse(str(folder / name))
+        for path in sorted(RECIPES.glob("*.toml")):
+            with self.subTest(path.name):
+                r = recipe.load(path)
+                self.assertTrue(branding.current(r), f"python3 -m lfsbuilder branding {path}")
+                for name, png in branding.pictures(r).items():
+                    self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"), name)
+
+    def test_the_name_logo_and_label_are_the_recipes(self):
+        r = recipe.load(RECIPES / "myxfce.toml")
+        self.assertEqual((r.branding, r.label_text), ("odyssey", "Odyssey Linux"))
+        self.assertEqual(branding.pictures_dir(r), ROOT / "branding" / "odyssey" / "pictures" / "odyssey-linux")
+        argo = recipe.load(RECIPES / "xfce.toml")
+        self.assertNotEqual(branding.pictures(r)[branding.BACKGROUND], branding.pictures(argo)[branding.BACKGROUND])
+        files = overlay.files(r)
+        self.assertEqual(files["argo-base/argo-myxfce-release/files/argo-256.png"], branding.pictures(r)["argo-256.png"])
+        self.assertEqual(json.loads(files["argo-base/argo-myxfce-release/files/wallpaper-metadata.json"])["KPlugin"]["Name"],
+                         "Odyssey Linux")
+        labelled = dataclasses.replace(r, label="Odyssey")
+        self.assertEqual(labelled.label_text, "Odyssey")
+        self.assertNotEqual(branding.stamp(labelled), branding.stamp(r))  # a new label: drawn again
+        dumped = recipe.dump(labelled)  # what the form saves
+        self.assertIn('branding = "odyssey"\n', dumped)
+        self.assertIn('label = "Odyssey"\n', dumped)
+        self.assertNotIn("branding =", recipe.dump(argo))  # Argo's is the default
+
+    def test_the_wordmark_fits_its_label(self):
+        logo = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"/>'
+        _, argo = branding.wordmark(logo, "Argo Linux", (2.3, 2.4), "#fff")
+        _, odyssey = branding.wordmark(logo, "Odyssey Linux", (3.9, 2.4), "#fff")
+        self.assertLess(argo, odyssey)
+        one, _ = branding.wordmark(logo, "Odyssey", (3.9, 0), "#fff")
+        self.assertNotIn('font-weight="400"', one)  # one word: all bold
+        svg, width = branding.wordmark(logo, "Averyveryverylongname Linux Distribution", (14.0, 9.0), "#fff")
+        self.assertLessEqual(width, branding.MAX_WIDTH + 2)  # shrunk to fit
+        self.assertIn("Averyveryverylongname", svg)
+        self.assertEqual(branding.label_parts("Odyssey Linux"), ("Odyssey", "Linux"))
+        self.assertEqual(branding.slug("Odyssey Linux"), "odyssey-linux")
+
+    def test_claudes_drawings_are_checked(self):
+        # A drawing from Claude is drawn by rsvg here and goes into every system: only shapes, in the file.
+        good = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">'
+                '<defs><linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient></defs>'
+                '<title>Owl</title><circle cx="128" cy="128" r="80" fill="url(#g)"/></svg>')
+        self.assertEqual(logo.problems(good), [])
+        self.assertEqual(logo.problems((ROOT / "branding" / "odyssey" / "logo.svg").read_text()), [])
+        for bad, why in (
+            (good.replace("<title>Owl</title>", "<script>alert(1)</script>"), "<script> isn't allowed"),
+            (good.replace("<title>Owl</title>", "<text>Owl</text>"), "<text> isn't allowed"),
+            (good.replace("<title>Owl</title>", '<image href="http://x/y.png"/>'), "<image> isn't allowed"),
+            (good.replace('fill="url(#g)"', 'fill="url(http://x/y)"'), "points outside the file"),
+            (good.replace('r="80"', 'r="80" onclick="x()"'), "'onclick'"),
+            (good.replace('viewBox="0 0 256 256"', 'viewBox="0 0 256 128"'), "isn't a square"),
+            ('<!DOCTYPE svg [<!ENTITY a "b">]>' + good, "DOCTYPE"),
+            (good.replace("</svg>", ""), "not well-formed"),
+            (good.replace("<title>Owl</title>", "<g>" + "<path d='M0 0'/>" * 4000 + "</g>"), "bytes"),
+        ):
+            with self.subTest(why):
+                self.assertTrue(any(why in p for p in logo.problems(bad)), logo.problems(bad))
+        with self.assertRaises(logo.LogoError):
+            logo.write("Bad Name", good, good)
+
+    def test_a_branding_needs_its_drawings(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "r.toml"
+            text = (RECIPES / "example.toml").read_text().replace('version = "0.1"', 'version = "0.1"\nbranding = "nowhere"', 1)
+            path.write_text(text)
+            with self.assertRaises(recipe.RecipeError) as raised:
+                recipe.load(path)
+            self.assertIn("branding/nowhere/ has no logo.svg", str(raised.exception))
 
 
 class Pictures(unittest.TestCase):

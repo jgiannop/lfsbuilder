@@ -3,6 +3,7 @@
 [distribution]
 name = "Odyssey Linux"
 version = "0.1"
+branding = "odyssey"
 
 [base]
 init = "systemd"

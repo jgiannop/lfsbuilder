@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import json
 
-from .overlay import ARGO, BRANDING
+from . import branding as pictures
+from .overlay import ARGO
 from .recipe import Recipe
 
 CONFIG = "/etc/calamares"
@@ -43,11 +44,11 @@ LIVE_ROOT = "/run/rootfsbase/"  # the ISO's SquashFS, mounted by dmsquash-live (
 # step's own package.use file, so no other step's fingerprint changes.
 PACKAGE_USE = ("dev-libs/boost python", "dev-libs/libpwquality python", "sys-boot/grub mount")
 PACKAGES = ("app-admin/calamares", "sys-boot/efibootmgr")
-# Pictures of /usr/share/argo (argo-release) the branding names, linked into its directory.
+# Pictures of /usr/share/argo (the release package) the branding names, linked into its directory.
 PICTURES = ("argo-64.png", "argo-wordmark-440.png", "argo-background-plain-1920x1080.png")
 # The side bar's logo: the ship in light colours (the dark one doesn't show on the side bar); written
 # into the branding directory by the installer step, so the argo packages stay as they are.
-LIGHT_LOGO = BRANDING / "argo-light-256.png"
+LIGHT_LOGO = pictures.LIGHT_LOGO
 DISPLAY_MANAGERS = ("gdm", "sddm", "lightdm")
 
 SIDEBAR, SIDEBAR_CURRENT, SAIL, TEXT = "#16325a", "#1d4a80", "#f2b544", "#ffffff"  # argo-background.svg's

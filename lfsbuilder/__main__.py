@@ -22,9 +22,10 @@ import getpass
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 
-from . import binhost, check as checks, clones, estimate, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
+from . import binhost, branding, logo, check as checks, clones, estimate, fixes, overlay, gentoo, image, recipe as recipes, repair, runner, steps
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "work"
@@ -65,6 +66,36 @@ def prepare(r: recipes.Recipe) -> int:
         print(error, file=sys.stderr)
         return 1
     gentoo.stage3_image(archive, stage3_image(r))
+    return 0
+
+
+def draw_pictures(r: recipes.Recipe, again: bool = False) -> None:
+    """The distribution's pictures, from its drawings and label (branding.py), drawn when they are
+    new or out of date: the steps carry them, so they must exist before anything is planned."""
+    if again or not branding.current(r):
+        out = branding.render(tools(), r, WORK / "branding-render")
+        print(f"drew the pictures of {r.label_text} ({r.branding}) into {out.relative_to(ROOT)}; "
+              "they belong in git beside the drawings", flush=True)
+
+
+def draw_logo(name: str, description: str, label: str, replace: bool) -> int:
+    """A logo drawn by Claude from the description (logo.py), written to branding/<name>/, and its
+    pictures drawn with the label, to look at before choosing it."""
+    try:
+        if (branding.BRANDING_ROOT / name).exists() and not replace:
+            raise logo.LogoError(f"branding/{name}/ is there already (choose another name, or replace it)")
+        print(f"asking Claude for the logo ({description.strip()[:80]})", flush=True)
+        drawing, light, summary, cost = logo.draw(name, description)
+        folder = logo.write(name, drawing, light, replace=replace)
+    except (logo.LogoError, subprocess.TimeoutExpired) as error:
+        print(f"no logo: {error}", file=sys.stderr)
+        return 1
+    print(f"Claude drew: {summary} (${cost:.2f})", flush=True)
+    look = types.SimpleNamespace(branding=name, label=label, label_text=label)
+    out = branding.render(tools(), look, WORK / "branding-render")
+    print(f"wrote {folder.relative_to(ROOT)}/logo.svg and logo-light.svg", flush=True)
+    print(f"pictures: {(out / branding.BACKGROUND).relative_to(ROOT)}", flush=True)
+    print(f"icon: {(out / 'argo-256.png').relative_to(ROOT)}", flush=True)
     return 0
 
 
@@ -430,7 +461,12 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--bind", default="127.0.0.1", help="the address to listen on (0.0.0.0: every network the machine is on)")
     serve.add_argument("--port", type=int, default=8080)
     sub.add_parser("clean").add_argument("--yes", action="store_true", help="remove them (without it, only list)")
-    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish"):
+    draw = sub.add_parser("draw-logo", help="a logo drawn by Claude from a description, into branding/NAME/")
+    draw.add_argument("name", help="the logo's folder name (lower-case letters, digits, _ and -)")
+    draw.add_argument("description", help="what the logo should show")
+    draw.add_argument("--label", default="Argo Linux", help="the words beside the logo in the pictures")
+    draw.add_argument("--replace", action="store_true", help="replace branding/NAME/ if it is there")
+    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish", "branding"):
         command = sub.add_parser(name)
         command.add_argument("recipe", type=Path)
         if name == "boot":
@@ -450,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
         return clean(args.yes)
     if args.command == "signing-key":
         return signing_key(args.name)
+    if args.command == "draw-logo":
+        return draw_logo(args.name, args.description, args.label, args.replace)
     if args.command == "serve":
         (BINHOST / "www").mkdir(parents=True, exist_ok=True)
         binhost.serve(BINHOST / "www", args.bind, args.port)
@@ -459,6 +497,10 @@ def main(argv: list[str] | None = None) -> int:
     except recipes.RecipeError as error:
         print(error, file=sys.stderr)
         return 2
+    if args.command == "branding":
+        draw_pictures(r, again=True)
+        return 0
+    draw_pictures(r)
     if args.command == "prepare":
         return prepare(r)
     if args.command == "plan":

@@ -14,7 +14,7 @@ disk and the boot loader):
   services    the services to start at boot (the recipe's, NetworkManager)
   users       root's password, the accounts, sudo for "wheel"
   argo        the distribution's own packages (overlay.py): argo-meta, the
-              recipe's packages; argo-release, os-release and the look
+              recipe's packages; argo-<recipe>-release, os-release and the look
   installer   GRUB (BIOS and UEFI), the disk tools, and lfsbuilder-install,
               which puts the live system (iso) on a disk; last, so adding it
               changed no other step's checkpoint
@@ -34,7 +34,7 @@ import dataclasses
 import shlex
 from pathlib import Path
 
-from . import binhost, calamares, fixes as fixes_, overlay
+from . import binhost, branding, calamares, fixes as fixes_, overlay
 from .recipe import Recipe
 
 EMERGE_OPTS = "--usepkg --binpkg-respect-use=y --with-bdeps=y"  # the build adds --jobs (runner.Shared)
@@ -220,8 +220,9 @@ def installer(r: Recipe) -> Step:
         script += f"chmod 0755 {' '.join(calamares.EXECUTABLE)}\n"
         script += f"rm -f {calamares.OWN_LAUNCHER}\n"  # Calamares' own (pkexec): ours in its place
         script += f"chmod 0440 {calamares.SUDO_RULE}\nvisudo -c -f {calamares.SUDO_RULE}\n"
-        script += (f"base64 -d > {calamares.CONFIG}/branding/argo/{calamares.LIGHT_LOGO.name} << 'LFSBUILDER_EOF'\n"
-                   f"{base64.b64encode(calamares.LIGHT_LOGO.read_bytes()).decode()}\nLFSBUILDER_EOF\n")
+        light_logo = branding.pictures(r)[calamares.LIGHT_LOGO]
+        script += (f"base64 -d > {calamares.CONFIG}/branding/argo/{calamares.LIGHT_LOGO} << 'LFSBUILDER_EOF'\n"
+                   f"{base64.b64encode(light_logo).decode()}\nLFSBUILDER_EOF\n")
         for picture in calamares.PICTURES:
             script += f"ln -sf {overlay.ARGO}/{picture} {calamares.CONFIG}/branding/argo/{picture}\n"
     if r.init == "systemd":
@@ -232,7 +233,7 @@ def installer(r: Recipe) -> Step:
 
 def argo(r: Recipe) -> Step:
     """The distribution's packages (overlay.py): argo-meta, which holds the
-    recipe's packages in the world file, and argo-release, which brings
+    recipe's packages in the world file, and its release package, which brings
     os-release, the logo, the wallpapers and the login screens. Built from
     the argo repository like any other package, so they are published
     and updated like the rest."""
@@ -240,9 +241,9 @@ def argo(r: Recipe) -> Step:
     script += f"# the argo packages: {overlay.packages_digest(r)}\n"
     # Built from the ebuilds every time (cheap): a binary of an earlier build with the same version
     # and USE flags may hold older pictures or files, and the newest build is what gets published.
-    script += f"emerge --verbose --usepkg=n --getbinpkg=n {overlay.CATEGORY}/argo-release {overlay.meta_name(r)}\n"
+    script += f"emerge --verbose --usepkg=n --getbinpkg=n {overlay.release_name(r)} {overlay.meta_name(r)}\n"
     script += f"emerge --verbose --noreplace {overlay.meta_name(r)}\n"  # (the world file: only it)
-    return Step("argo", f"{r.name} {r.version}: argo-release, {overlay.meta_name(r)}", script)
+    return Step("argo", f"{r.name} {r.version}: {overlay.release_name(r)}, {overlay.meta_name(r)}", script)
 
 
 TRUST = Path(__file__).with_name("trust.sh")

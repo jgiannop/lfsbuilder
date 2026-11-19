@@ -11,14 +11,15 @@ in Gentoo's own ways:
                                 USE flags per package (package.use); the
                                 system's profile, so a change reaches it
                                 with the next sync
-  argo-base/argo-release        os-release, the logo, the wallpapers, the
-                                login screens (what was the branding step):
-                                one package for every recipe, the desktop
-                                chosen by its USE flags (gdm, sddm,
-                                lightdm, plasma, xfce), which the profile
-                                sets; recipes share one set of binary
-                                packages, and Portage tells their builds
-                                apart by USE
+  argo-base/argo-<recipe>-release
+                                os-release, the logo, the wallpapers, the
+                                login screens (the pictures: branding.py,
+                                from the recipe's drawings and label), the
+                                desktop's part chosen by its USE flags
+                                (gdm, sddm, lightdm, plasma, xfce), which
+                                the profile sets; named after the recipe:
+                                recipes share one set of binary packages,
+                                and each distribution's look is its own
   argo-base/argo-<recipe>       depends on the recipe's packages: the one
                                 package in the system's world file, so a
                                 package added to the recipe comes with
@@ -44,16 +45,15 @@ import re
 import shutil
 from pathlib import Path
 
+from . import branding
 from .recipe import Recipe
 
 REPO = "argo"
 CATEGORY = "argo-base"
 LOCATION = "/var/db/repos/argo"
-BRANDING = Path(__file__).resolve().parent.parent / "branding"  # the PNGs made by branding/render.sh
 ARGO = "/usr/share/argo"
-PICTURES = ("argo-background-1920x1080.png", "argo-background-plain-1920x1080.png", "argo-wordmark-440.png",
-            "argo-wordmark-light-440.png", "argo-grub-1024x768.png", "argo-64.png", "argo-128.png", "argo-256.png",
-            "argo-512.png")
+# The pictures in /usr/share/argo (the light logo goes to the installer only: the installer step writes it).
+PICTURES = tuple(n for n in branding.NAMES if n != branding.LIGHT_LOGO)
 VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*$")  # a Portage version, kept simple
 
 PLASMA_LNF = "org.argolinux.desktop"
@@ -71,6 +71,12 @@ def meta_name(r: Recipe) -> str:
     return f"{CATEGORY}/argo-{r.stem}"
 
 
+def release_name(r: Recipe) -> str:
+    """The recipe's release package: its own, as its look and name are (one name for every recipe
+    would mix them up in the binary packages they share)."""
+    return f"{CATEGORY}/argo-{r.stem}-release"
+
+
 # LightDM's session when the desktop is Xfce: without it, LightDM starts the first session by name,
 # xinit's Xsession, and the login returns to the greeter ("exec: xsm: not found").
 LIGHTDM_SESSION = "[Seat:*]\nuser-session=xfce\n"
@@ -78,7 +84,7 @@ DESKTOP_FLAGS = ("gdm", "sddm", "lightdm", "plasma", "xfce")
 
 
 def release_flags(r: Recipe) -> list[str]:
-    """argo-release's USE flags for the recipe: its login screen and desktop."""
+    """The release package's USE flags for the recipe: its login screen and desktop."""
     flags = [s for s in ("gdm", "sddm", "lightdm") if s in r.services]
     if "kde-plasma/plasma-meta" in r.packages:
         flags.append("plasma")
@@ -106,7 +112,7 @@ def _package_use(r: Recipe) -> str:
     lines += [f"{atom} {' '.join(flags)}" for atom, flags in sorted(r.package_use.items())]
     flags = release_flags(r)
     if flags:  # (off by default)
-        lines.append(f"{CATEGORY}/argo-release {' '.join(flags)}")
+        lines.append(f"{release_name(r)} {' '.join(flags)}")
     return "\n".join(lines) + "\n"
 
 
@@ -135,10 +141,14 @@ def _os_release(r: Recipe) -> str:
 
 GDM_PROFILE = "user-db:user\nsystem-db:gdm\nfile-db:/usr/share/gdm/greeter-dconf-defaults\n"
 USER_PROFILE = "user-db:user\nsystem-db:local\n"
-PLASMA_WALLPAPER = {"KPlugin": {"Id": "Argo", "Name": "Argo Linux", "License": "CC-BY-SA-4.0"}}
-PLASMA_LNF_METADATA = {"KPackageStructure": "Plasma/LookAndFeel",
-                       "KPlugin": {"Id": PLASMA_LNF, "Name": "Argo Linux", "Description": "Breeze, with Argo Linux's wallpaper",
-                                   "License": "GPL-2.0-or-later"}}
+def plasma_wallpaper(r: Recipe) -> dict:
+    return {"KPlugin": {"Id": "Argo", "Name": r.name, "License": "CC-BY-SA-4.0"}}
+
+
+def plasma_lnf_metadata(r: Recipe) -> dict:
+    return {"KPackageStructure": "Plasma/LookAndFeel",
+            "KPlugin": {"Id": PLASMA_LNF, "Name": r.name, "Description": f"Breeze, with {r.name}'s wallpaper",
+                        "License": "GPL-2.0-or-later"}}
 # Breeze's look-and-feel defaults (plasma-workspace), with our wallpaper; what isn't here falls back to Breeze.
 PLASMA_LNF_DEFAULTS = """[kdeglobals][KDE]
 widgetStyle=Breeze
@@ -165,7 +175,7 @@ theme=Breeze
 [ksplashrc][KSplash]
 Theme=org.kde.breeze.desktop
 """
-XFDESKTOP_HOOK = """# Written by lfsbuilder (argo-base/argo-release): Argo Linux's wallpaper as
+XFDESKTOP_HOOK = """# Written by lfsbuilder (the distribution's release package): its wallpaper as
 # xfdesktop's default, the file built into it, at every install of xfdesktop.
 argo_wallpaper() {
     # $1: the root to write into (ED while installing xfdesktop, EROOT after: in pkg_postinst ED is
@@ -186,11 +196,11 @@ post_src_install() { argo_wallpaper "${ED}"; }
 
 
 def _release(r: Recipe) -> dict[str, bytes]:
-    """argo-release: its ebuild and files, the same for every recipe of the
-    distribution (only the name and version come from it); each desktop's
-    part under its USE flag."""
-    d = f"{CATEGORY}/argo-release"
-    files: dict[str, bytes] = {f"{d}/files/{name}": (BRANDING / name).read_bytes() for name in PICTURES}
+    """The release package: its ebuild and files (the recipe's name, version and pictures); each
+    desktop's part under its USE flag."""
+    d = release_name(r)
+    drawn = branding.pictures(r)
+    files: dict[str, bytes] = {f"{d}/files/{name}": drawn[name] for name in PICTURES}
     files[f"{d}/files/os-release"] = _os_release(r).encode()
     files[f"{d}/files/issue"] = f"\n{r.name} {r.version} (\\s \\m \\r) \\t\n\n".encode()  # agetty's \s etc.
     background = f"{ARGO}/argo-background-1920x1080.png"
@@ -205,8 +215,8 @@ def _release(r: Recipe) -> dict[str, bytes]:
     files[f"{d}/files/breeze-theme.conf.user"] = (
         f"[General]\ntype=image\nbackground={ARGO}/argo-background-plain-1920x1080.png\n"
         f"showlogo=shown\nlogo={ARGO}/argo-wordmark-light-440.png\n").encode()
-    files[f"{d}/files/wallpaper-metadata.json"] = (json.dumps(PLASMA_WALLPAPER, indent=4) + "\n").encode()
-    files[f"{d}/files/lnf-metadata.json"] = (json.dumps(PLASMA_LNF_METADATA, indent=4) + "\n").encode()
+    files[f"{d}/files/wallpaper-metadata.json"] = (json.dumps(plasma_wallpaper(r), indent=4) + "\n").encode()
+    files[f"{d}/files/lnf-metadata.json"] = (json.dumps(plasma_lnf_metadata(r), indent=4) + "\n").encode()
     files[f"{d}/files/lnf-defaults"] = PLASMA_LNF_DEFAULTS.encode()
     files[f"{d}/files/xfdesktop.env"] = XFDESKTOP_HOOK.encode()
     files[f"{d}/files/lightdm-50-argo.conf"] = LIGHTDM_SESSION.encode()
@@ -310,12 +320,12 @@ pkg_postrm() {{
 \txdg_icon_cache_update
 }}
 """
-    files[f"{d}/argo-release-{r.version}.ebuild"] = ebuild.encode()
+    files[f"{d}/{d.split('/')[1]}-{r.version}.ebuild"] = ebuild.encode()
     return files
 
 
 def _meta(r: Recipe) -> dict[str, bytes]:
-    depends = "\n".join(f"\t{atom}" for atom in [f"{CATEGORY}/argo-release", *packages(r)])
+    depends = "\n".join(f"\t{atom}" for atom in [release_name(r), *packages(r)])
     ebuild = f"""# Written by lfsbuilder from the recipe {r.path.name}.
 EAPI=8
 
@@ -363,7 +373,7 @@ def profile_digest(r: Recipe) -> str:
 
 
 def packages_digest(r: Recipe) -> str:
-    """Of argo-release and argo-meta: in the argo step's script."""
+    """Of the release and the meta package: in the argo step's script."""
     return _digest({p: c for p, c in files(r).items() if p.startswith(f"{CATEGORY}/")})
 
 
