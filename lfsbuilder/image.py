@@ -177,7 +177,9 @@ menuentry "{title} (live)" {{
 
 def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Path, r: Recipe) -> None:
     """A live ISO that boots on BIOS and UEFI PCs: the system as a SquashFS
-    (sqfstar reads the tar, so the owners come from it, without root), the
+    (sqfstar reads the tar, so the owners come from it, without root; but the
+    root directory, which the tar has no entry for, it gives the user running
+    it and mode 0777 unless told: root's, 0755), the
     kernel and live initramfs, and GRUB, put together by grub-mkrescue."""
     tree = work / "iso"
     subprocess.run(["rm", "-rf", str(tree)], check=True)
@@ -188,7 +190,7 @@ def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Pat
     volume = volume_id(r)
     (tree / "boot" / "grub" / "grub.cfg").write_text(GRUB_CFG.format(title=f"{r.name} {r.version}", volume=volume))
     (tree / "boot" / "grub" / "argo.png").write_bytes(GRUB_BACKGROUND.read_bytes())
-    tools.run("sh", "-c", 'sqfstar -quiet -no-progress -comp zstd "$1" < "$2"', "sh",
+    tools.run("sh", "-c", 'sqfstar -quiet -no-progress -comp zstd -root-uid 0 -root-gid 0 -root-mode 0755 "$1" < "$2"', "sh",
               tools.inside(tree / "LiveOS" / "squashfs.img"), tools.inside(rootfs))
     out.unlink(missing_ok=True)
     tools.run("grub-mkrescue", "--quiet", "-o", tools.inside(out), tools.inside(tree), "--", "-volid", volume, capture=True)

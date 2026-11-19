@@ -254,6 +254,17 @@ class GraphicalInstaller(unittest.TestCase):
             self.assertIn(f"- {calamares.display_manager(r)}\n", calamares.modules(r)["displaymanager.conf"])
         self.assertFalse(recipe.load(RECIPES / "example.toml").graphical_installer)
 
+    def test_the_root_directory_is_roots(self):
+        # sqfstar gives the root directory (no tar entry) its user's uid and 0777: the live system's /
+        # was demo's, and every copy's after it (systemd-tmpfiles then refused all, and GNOME failed).
+        import inspect
+        self.assertIn("-root-uid 0 -root-gid 0 -root-mode 0755", inspect.getsource(image.iso))
+        installer = (Path(steps.__file__).parent / "installer.sh").read_text()
+        self.assertIn('chown 0:0 "$target"; chmod 0755 "$target"', installer)
+        live = calamares.helper(recipe.load(RECIPES / "gnome.toml")).split("live)", 1)[1].split(";;", 1)[0]
+        self.assertIn("chown 0:0 /", live)
+        self.assertIn("chmod 0755 /", live)
+
     def test_only_what_was_tested_is_offered(self):
         r = recipe.load(RECIPES / "xfce.toml")
         partition = calamares.modules(r)["partition.conf"]

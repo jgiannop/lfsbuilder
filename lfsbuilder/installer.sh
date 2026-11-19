@@ -75,6 +75,8 @@ if [ ! -d "$source/etc" ]; then
     mount -o ro,loop /run/initramfs/live/LiveOS/squashfs.img "$source"
 fi
 tar -C "$source" --one-file-system --xattrs --acls -cpf - . | tar -C "$target" --xattrs --acls -xpf -
+# The root directory is root's (live media made before 2026-11-19 had it owned by uid 1000, mode 0777).
+chown 0:0 "$target"; chmod 0755 "$target"
 mkdir -p "$target/boot/efi"
 mount "$esp" "$target/boot/efi"
 

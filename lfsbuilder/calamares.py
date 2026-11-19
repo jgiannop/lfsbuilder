@@ -302,6 +302,9 @@ case "${{1:-}}" in
             if id "$user" >/dev/null 2>&1; then userdel -r "$user" 2>/dev/null || userdel "$user"; fi
         done
         rm -f {" ".join(LIVE_ONLY)}
+        # / is root's (rsync copied the live root's owner: uid 1000, mode 0777, on media made before 2026-11-19).
+        chown 0:0 /
+        chmod 0755 /
         ;;
     grub)
         sed -i 's|^#\\?GRUB_DISTRIBUTOR=.*|GRUB_DISTRIBUTOR="{r.short_name}"|' /etc/default/grub
