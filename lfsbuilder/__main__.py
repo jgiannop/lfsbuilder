@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -91,6 +92,35 @@ def screen_problem(r: recipes.Recipe, screenshot: Path) -> str | None:
         return (f"but the screen is a text console, not {manager}'s login ({screenshot.relative_to(ROOT)}); "
                 f"`journalctl -b -u {manager}` in the system says why")
     return None
+
+
+LOGIN_PASSWORD = "LFSBUILDER_LOGIN_PASSWORD"  # the login test's password, if not asked for
+
+
+def login_for(r: recipes.Recipe, user: str | None) -> image.Login | None:
+    """The login test's user and password (asked for: a recipe holds hashes only), or None
+    without --login. Exits if the recipe has no display manager or no such user."""
+    if user is None:
+        return None
+    manager = next((s for s in r.services if s in DISPLAY_MANAGERS), None)
+    if manager is None:
+        raise SystemExit("--login needs a recipe with a display manager (gdm, sddm or lightdm)")
+    if user not in [a.name for a in r.accounts]:
+        raise SystemExit(f"--login: {user!r} isn't one of the recipe's users.accounts")
+    password = os.environ.get(LOGIN_PASSWORD) or getpass.getpass(f"{user}'s password (for the login test): ")
+    try:
+        image.keys_for(password)
+    except ValueError as error:
+        raise SystemExit(f"--login: {error}")
+    return image.Login(manager, user, password)
+
+
+def login_passed(login: image.Login | None, screenshot: Path) -> str:
+    """What the boot test showed beyond the greeter, for its message."""
+    if login is None:
+        return ""
+    session = screenshot.with_name(screenshot.stem + "-session.png")
+    return f"; {login.user} logged in at the greeter and has a desktop session (the screen in {session.relative_to(ROOT)})"
 
 
 def plan(r: recipes.Recipe) -> int:
@@ -222,7 +252,7 @@ def repository_clones(r: recipes.Recipe, out: Path) -> dict[str, Path] | None:
     return repos
 
 
-def iso(r: recipes.Recipe) -> int:
+def iso(r: recipes.Recipe, login: image.Login | None = None) -> int:
     p = planned(r)
     if p is None:
         return 1
@@ -275,11 +305,17 @@ def iso(r: recipes.Recipe) -> int:
     print("the installed system's / is root's", flush=True)
     for firmware in firmwares:
         log, screenshot = out / "logs" / f"boot-installed-{firmware}.log", out / f"screen-installed-{firmware}.png"
-        if image.boot_test(None, None, installed, log, screenshot, uefi=firmware == "uefi"):
+        try:
+            booted = image.boot_test(None, None, installed, log, screenshot, uefi=firmware == "uefi", login=login)
+        except image.LoginFailed as error:
+            print(f"the installed disk boots with {firmware.upper()}, but {error}", file=sys.stderr)
+            return 1  # (installed.img is kept, to look into)
+        if booted:
             if problem := screen_problem(r, screenshot):
                 print(f"the installed disk boots with {firmware.upper()}, {problem}", file=sys.stderr)
                 return 1  # (installed.img is kept, to look into)
-            print(f"the installed disk boots with {firmware.upper()} (its own GRUB), the login prompt came", flush=True)
+            print(f"the installed disk boots with {firmware.upper()} (its own GRUB), the login prompt came"
+                  f"{login_passed(login, screenshot)}", flush=True)
             continue
         print(f"the installed disk doesn't boot with {firmware.upper()}; the end of its console ({log}):", file=sys.stderr)
         for line in log.read_text(errors="replace").splitlines()[-30:]:
@@ -344,7 +380,7 @@ def publish(r: recipes.Recipe) -> int:
     return 0
 
 
-def boot(r: recipes.Recipe, console: bool = False) -> int:
+def boot(r: recipes.Recipe, console: bool = False, login: image.Login | None = None) -> int:
     p = planned(r)
     if p is None:
         return 1
@@ -367,11 +403,17 @@ def boot(r: recipes.Recipe, console: bool = False) -> int:
     print(f"booting it in QEMU with {kernel.name}", flush=True)
     log = out / "logs" / "boot.log"
     screenshot = out / "screen.png"
-    if image.boot_test(kernel, initramfs, out / "disk.img", log, screenshot):
+    try:
+        booted = image.boot_test(kernel, initramfs, out / "disk.img", log, screenshot, login=login)
+    except image.LoginFailed as error:
+        print(f"it boots, but {error}", file=sys.stderr)
+        return 1
+    if booted:
         if problem := screen_problem(r, screenshot):
             print(f"it boots, {problem}", file=sys.stderr)
             return 1
-        print(f"it boots: the login prompt came (console in {log.relative_to(ROOT)}, the screen in {screenshot.relative_to(ROOT)})")
+        print(f"it boots: the login prompt came (console in {log.relative_to(ROOT)}, the screen in {screenshot.relative_to(ROOT)})"
+              f"{login_passed(login, screenshot)}")
         return 0
     print(f"no login prompt; the end of the console ({log}):", file=sys.stderr)
     for line in log.read_text(errors="replace").splitlines()[-30:]:
@@ -393,6 +435,10 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("recipe", type=Path)
         if name == "boot":
             command.add_argument("--console", action="store_true", help="stay in the system's console to log in (Ctrl-A X quits)")
+        if name in ("boot", "iso"):
+            command.add_argument("--login", metavar="USER",
+                                 help=f"log in as USER at the display manager's greeter and check a desktop session starts "
+                                      f"(the password is asked for, or taken from ${LOGIN_PASSWORD}); iso: on the installed disk")
         if name == "build":
             command.add_argument("--until", metavar="STEP", help="stop after this step (its name, as plan shows: portage, world, ...)")
             command.add_argument("--repair", action="store_true",
@@ -420,11 +466,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "check":
         return check(r)
     if args.command == "iso":
-        return iso(r)
+        return iso(r, login_for(r, args.login))
     if args.command == "publish":
         return publish(r)
     if args.command == "boot":
-        return boot(r, args.console)
+        return boot(r, args.console, login_for(r, args.login))
     return build(r, args.until, args.repair)
 
 

@@ -13,10 +13,12 @@ saves a picture of the screen (a desktop's login screen, if it has one).
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import os
 import re
+import select
 import selectors
 import socket
 import struct
@@ -289,7 +291,8 @@ MEMORY_MB = 4096  # a desktop needs more than 2 GB
 
 
 def boot_test(kernel: Path | None, initramfs: Path | None, image: Path, log: Path, screenshot: Path,
-              timeout: int = 300, settle: int = 45, cdrom: bool = False, uefi: bool = False) -> bool:
+              timeout: int = 300, settle: int = 45, cdrom: bool = False, uefi: bool = False,
+              login: Login | None = None) -> bool:
     """Starts the disk in QEMU and waits for the login prompt on the serial
     console. True if it comes; the console's output is in `log`. Then, after
     `settle` seconds (a display manager starts after the serial login), a
@@ -300,12 +303,12 @@ def boot_test(kernel: Path | None, initramfs: Path | None, image: Path, log: Pat
     holding the processor's VT-x), the test runs again without KVM: slower,
     but the answer is the same."""
     if os.access("/dev/kvm", os.R_OK | os.W_OK):
-        result = _boot(kernel, initramfs, image, log, screenshot, timeout, settle, kvm=True, cdrom=cdrom, uefi=uefi)
+        result = _boot(kernel, initramfs, image, log, screenshot, timeout, settle, kvm=True, cdrom=cdrom, uefi=uefi, login=login)
         if result is not None:
             return result
         print("KVM can't start the virtual machine (is VirtualBox or another hypervisor running?);"
               " trying again without KVM, which is slower", flush=True)
-    return bool(_boot(kernel, initramfs, image, log, screenshot, timeout * 5, settle * 5, kvm=False, cdrom=cdrom, uefi=uefi))
+    return bool(_boot(kernel, initramfs, image, log, screenshot, timeout * 5, settle * 5, kvm=False, cdrom=cdrom, uefi=uefi, login=login))
 
 
 def qemu_command(kernel: Path | None, initramfs: Path | None, image: Path, kvm: bool, monitor: Path | None = None,
@@ -389,8 +392,117 @@ def console(kernel: Path, initramfs: Path, image: Path) -> None:
     os.execvp("qemu-system-x86_64", qemu_command(kernel, initramfs, image, kvm))
 
 
+@dataclasses.dataclass
+class Login:
+    """Who the login test logs in as, at which display manager's greeter."""
+    manager: str  # gdm, sddm, lightdm
+    user: str
+    password: str
+
+
+class LoginFailed(Exception):
+    """The system booted to its greeter, but logging in there gave no desktop session."""
+
+
+# The keys that bring each greeter, with the system's only user, to its password field.
+GREETER_KEYS = {"gdm": ["ret"], "sddm": [], "lightdm": []}
+# QEMU's key names for what isn't a letter or digit.
+KEY_NAMES = {" ": "spc", "-": "minus", ".": "dot", "/": "slash", "_": "shift-minus", "@": "shift-2", ":": "shift-semicolon",
+             ";": "semicolon", "|": "shift-backslash", "#": "shift-3", "&": "shift-7", ">": "shift-dot", "<": "shift-comma",
+             "*": "shift-8", "=": "equal", "'": "apostrophe", '"': "shift-apostrophe", ",": "comma", "$": "shift-4",
+             "~": "shift-grave_accent", "\\": "backslash", "(": "shift-9", ")": "shift-0", "+": "shift-equal",
+             "!": "shift-1", "%": "shift-5", "^": "shift-6", "?": "shift-slash", "[": "bracket_left",
+             "]": "bracket_right", "{": "shift-bracket_left", "}": "shift-bracket_right", "`": "grave_accent"}
+
+
+def keys_for(text: str) -> list[str]:
+    """QEMU's sendkey names that type `text` (a US keyboard layout)."""
+    keys = []
+    for ch in text:
+        if ch in KEY_NAMES:
+            keys.append(KEY_NAMES[ch])
+        elif ch.isascii() and ch.isalnum():
+            keys.append(f"shift-{ch.lower()}" if ch.isupper() else ch)
+        else:
+            raise ValueError("the login test can type only ASCII letters, digits and punctuation")
+    return keys
+
+
+def graphical_sessions(answer: str, user: str) -> list[dict[str, str]]:
+    """The user's active graphical sessions in `loginctl show-session` output
+    (blocks of Key=value, a blank line between sessions)."""
+    sessions, current = [], {}
+    answer = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x1b\x07]*(\x07|\x1b\\)", "", answer)  # colours, terminal marks
+    for line in [*answer.replace("\r", "").splitlines(), ""]:
+        if "=" in line:
+            key, _, value = line.strip().partition("=")
+            current[key] = value
+        elif current:
+            sessions.append(current)
+            current = {}
+    return [s for s in sessions if s.get("Name") == user and s.get("Type") in ("x11", "wayland")
+            and s.get("Class") == "user" and s.get("State") == "active"]
+
+
+# Asked on the serial console after logging in there: every session's name, type, class and state.
+# The end mark is computed, so the echoed command doesn't hold it.
+SESSIONS_COMMAND = ("export SYSTEMD_COLORS=0; for s in $(loginctl list-sessions --no-legend | awk '{print $1}'); do "
+                    "loginctl show-session \"$s\" -p Name -p Type -p Class -p State; echo; done; echo END-$((6*7))\n")
+
+
+def _monitor(monitor: Path, *lines: str, pause: float = 0.1) -> None:
+    """Commands for QEMU's (human) monitor, one after another."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(str(monitor))
+        for line in lines:
+            s.sendall(f"{line}\n".encode())
+            time.sleep(pause)
+        time.sleep(0.5)
+
+
+def _login_test(qemu: subprocess.Popen, out, monitor: Path, login: Login, settle: int, screenshot: Path) -> None:
+    """Logs in at the greeter, then on the serial console, where loginctl
+    must show the user's graphical session. Raises LoginFailed if not."""
+    _monitor(monitor, *(f"sendkey {k}" for k in GREETER_KEYS[login.manager]), pause=3)
+    _monitor(monitor, *(f"sendkey {k}" for k in [*keys_for(login.password), "ret"]))
+    time.sleep(settle)
+    _screendump(monitor, screenshot.with_name(screenshot.stem + "-session.png"))
+
+    def expect(sign: bytes, seconds: int) -> bytes:
+        seen, deadline = b"", time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([qemu.stdout], [], [], 1)
+            if ready:
+                chunk = os.read(qemu.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+                seen += chunk
+                if sign in seen:
+                    return seen
+        raise LoginFailed(f"no {sign.decode()!r} on the serial console")
+
+    def send(text: str) -> None:
+        qemu.stdin.write(text.encode())
+        qemu.stdin.flush()
+
+    send("\n")
+    expect(b"login:", 30)
+    send(f"{login.user}\n")
+    expect(b"assword:", 30)
+    send(f"{login.password}\n")
+    time.sleep(5)
+    send(SESSIONS_COMMAND)
+    answer = expect(b"END-42", 30).decode(errors="replace")
+    if not graphical_sessions(answer, login.user):
+        raise LoginFailed(f"after logging in at {login.manager}'s greeter, {login.user} has no graphical session "
+                          f"(loginctl on the serial console, in the log; the screen in "
+                          f"{screenshot.stem}-session.png)")
+
+
 def _boot(kernel: Path | None, initramfs: Path | None, image: Path, log: Path, screenshot: Path,
-          timeout: int, settle: int, kvm: bool, cdrom: bool = False, uefi: bool = False) -> bool | None:
+          timeout: int, settle: int, kvm: bool, cdrom: bool = False, uefi: bool = False,
+          login: Login | None = None) -> bool | None:
     """One boot; None if KVM failed to run the machine at all."""
     monitor = log.with_name("qemu-monitor.sock")
     monitor.unlink(missing_ok=True)
@@ -399,13 +511,16 @@ def _boot(kernel: Path | None, initramfs: Path | None, image: Path, log: Path, s
     started = time.monotonic()
     logged_in_at = None
     with log.open("wb") as out:
-        qemu = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        qemu = subprocess.Popen(command, stdin=subprocess.PIPE if login else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         selector = selectors.DefaultSelector()
         selector.register(qemu.stdout, selectors.EVENT_READ)
         try:
             while time.monotonic() - started < timeout or logged_in_at:
                 if logged_in_at and time.monotonic() - logged_in_at > settle:
                     _screendump(monitor, screenshot)
+                    if login:
+                        _login_test(qemu, out, monitor, login, settle, screenshot)
                     return True
                 if not selector.select(timeout=2):
                     continue

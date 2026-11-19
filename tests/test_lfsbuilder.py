@@ -265,6 +265,22 @@ class GraphicalInstaller(unittest.TestCase):
         self.assertIn("chown 0:0 /", live)
         self.assertIn("chmod 0755 /", live)
 
+    def test_the_login_test(self):
+        self.assertEqual(image.keys_for("aB3 -!"), ["a", "shift-b", "3", "spc", "minus", "shift-1"])
+        with self.assertRaises(ValueError):
+            image.keys_for("κωδικός")
+        # loginctl's answer on the serial console, colours and terminal marks included (as GNOME's gave it).
+        answer = ("\x1b]3008;start=x;type=command\x1b\\Name=demo\x1b[m\r\nType=wayland\x1b[m\r\nClass=user\x1b[m\r\n"
+                  "State=active\x1b[m\r\n\x1b[K\r\nName=demo\r\nType=unspecified\r\nClass=manager\r\nState=active\r\n\r\n"
+                  "Name=demo\r\nType=tty\r\nClass=user\r\nState=active\r\n\r\nEND-42\r\n")
+        self.assertEqual(image.graphical_sessions(answer, "demo"),
+                         [{"Name": "demo", "Type": "wayland", "Class": "user", "State": "active"}])
+        self.assertEqual(image.graphical_sessions(answer, "jason"), [])
+        # Back at the greeter: only the serial login's own session.
+        self.assertEqual(image.graphical_sessions("Name=demo\nType=tty\nClass=user\nState=active\n\n", "demo"), [])
+        self.assertNotIn("END-42", image.SESSIONS_COMMAND)  # the echoed command must not look like the answer's end
+        self.assertEqual(set(image.GREETER_KEYS), set(calamares.DISPLAY_MANAGERS))
+
     def test_the_root_directory_is_checked(self):
         self.assertIsNone(image.root_problem(0, 0, 0o755))
         self.assertIsNone(image.root_problem(0, 0, 0o555))  # Gentoo's own
