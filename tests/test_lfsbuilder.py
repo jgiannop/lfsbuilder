@@ -631,11 +631,30 @@ class Customizations(unittest.TestCase):
             with self.assertRaises(recipe.RecipeError) as raised:
                 recipe.load(self.recipe(d, self.NANO, patch="not a diff at all\n"))
             self.assertIn("isn't a unified diff", str(raised.exception))
-        with tempfile.TemporaryDirectory() as d:
-            r = recipe.load(self.recipe(d, self.NANO))
-            other = dataclasses.replace(r, customizations=[dataclasses.replace(r.customizations[0], package="app-misc/abduco")])
-            with self.assertRaises(fixes.FixError):
-                steps.all_steps(other)  # not one of the recipe's packages
+
+    def test_a_program_inside_a_bundle_is_compiled_before_it(self):
+        # GNOME's top bar is gnome-shell, inside gnome-light: compiled (with its patch, never a binary)
+        # in a step of its own before the recipe's packages, which then find it installed.
+        r = recipe.load(RECIPES / "gnome.toml")
+        shell = recipe.Customization("gnome-base/gnome-shell", "Activities should say Odyssey",
+                                     "grep -rq Odyssey /usr/share/gnome-shell", NANO_PATCH)
+        planned = steps.all_steps(dataclasses.replace(r, customizations=[shell]))
+        names = [s.name for s in planned]
+        self.assertEqual(names.index("customizations"), names.index("system") + 1)
+        self.assertLess(names.index("customizations"), names.index("gnome-base_gnome-light"))
+        step = planned[names.index("customizations")]
+        self.assertIn("/etc/portage/patches/gnome-base/gnome-shell/customization.patch", step.script)
+        self.assertIn("--usepkg-exclude gnome-base/gnome-shell", step.script)
+        self.assertIn("emerge --oneshot --verbose gnome-base/gnome-shell\n", step.script)
+        self.assertTrue(step.script.rstrip().endswith("grep -rq Odyssey /usr/share/gnome-shell"))
+        self.assertNotIn("customizations", [s.name for s in steps.all_steps(r)])  # none: no step, nothing changes
+
+    def test_package_names_lose_their_versions(self):
+        for cpv, name in (("gnome-base/gnome-shell-49.9", "gnome-base/gnome-shell"), ("acct-group/gdm-0-r2", "acct-group/gdm"),
+                          ("gnome-base/gdm-49.4-5", "gnome-base/gdm"),  # a binary's build number (binpkg-multi-instance)
+                          ("x11-themes/sound-theme-freedesktop-0.8-r1-3", "x11-themes/sound-theme-freedesktop"),
+                          ("media-libs/libvpx-1.15.2", "media-libs/libvpx"), ("dev-lang/python-3.13.11_p1", "dev-lang/python")):
+            self.assertEqual(customize.unversioned(cpv), name)
 
     def test_patches_are_made_here_and_checked(self):
         with tempfile.TemporaryDirectory() as d:

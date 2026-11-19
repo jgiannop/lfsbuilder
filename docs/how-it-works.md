@@ -234,6 +234,8 @@ You can ask for a change to any of the recipe's programs in words, and that one 
 
 From a terminal: `python3 -m lfsbuilder customize recipes/myxfce.toml app-editors/nano "Add the line ..." --check "..." --keep`.
 
+**Any program of the system**, not only the recipe's own: a desktop like GNOME is some 300 programs behind one name (its top bar is `gnome-base/gnome-shell`, its windows `x11-wm/mutter`, Files `gnome-base/nautilus`, the login screen `gnome-base/gdm`). The Program list holds them all (type to search). Not sure which? Write the instruction and press **Which program? (ask Claude)**: Claude picks the program, or tells you the wish is only a setting (the clock showing seconds is one), which needs no change to the code. A program inside a bundle is compiled in a step of its own before the bundle is installed.
+
 A newer Gentoo version can make a patch stop applying (the program's code moved): the step then fails, and writing the change again from the same instruction makes a new one. A small program compiles in a minute (nano: 76 s); Firefox takes 1.5–3 hours.
 
 ## Good to know

@@ -121,6 +121,19 @@ def package(atom: str, custom=None) -> Step:
     return Step(atom.replace("/", "_"), f"{atom} (customized)", script, package=atom)
 
 
+def customized(customs: list) -> Step:
+    """The customized programs the recipe doesn't name itself, each compiled with its patch (and
+    never a binary of it), with its dependencies, then checked; before the recipe's packages."""
+    script = "set -e\n"
+    for c in customs:
+        script += patch_script(c.package, CUSTOM_PATCH, c.patch)
+    script += f"emerge --oneshot --verbose {' '.join(shlex.quote(c.package) for c in customs)}\n"
+    for c in customs:
+        if c.check:
+            script += f"# {c.package}'s check\n{c.check}\n"
+    return Step("customizations", "Programs changed by customizations: " + ", ".join(c.package for c in customs), script)
+
+
 def patch_script(atom: str, name: str, text: str) -> str:
     """A patch for Portage to apply to the package, and no binaries of it in this step."""
     directory = f"/etc/portage/patches/{atom}"
@@ -364,10 +377,11 @@ def all_steps(r: Recipe) -> list[Step]:
     # What changes least comes first, so a change rebuilds as little as it can:
     # adding a package doesn't redo the kernel.
     custom = {c.package: c for c in r.customizations}
-    missing = [c for c in custom if c not in packages]
-    if missing:
-        raise fixes_.FixError(f"a customization is for {', '.join(missing)}, which isn't one of the recipe's packages")
-    steps = [portage(r), world(), kernel(r), system(r), *(package(a, custom.get(a)) for a in packages),
+    # A customized program the recipe doesn't name (part of a bundle: GNOME's gnome-shell in gnome-light)
+    # is compiled in a step of its own before the recipe's packages, which then find it installed.
+    inner = [c for c in r.customizations if c.package not in packages]
+    steps = [portage(r), world(), kernel(r), system(r), *([customized(inner)] if inner else []),
+             *(package(a, custom.get(a)) for a in packages),
              *([enabled] if enabled else []), users(r), argo(r), installer(r), *([updates(r)] if r.binhost else [])]
     # Each fix goes in at the start of the step it was found in (fixes.py).
     names = {s.name for s in steps}

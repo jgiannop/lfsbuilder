@@ -23,7 +23,7 @@ from pathlib import Path
 from PySide6.QtCore import QProcess, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPalette, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QRadioButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
     QWidget,
@@ -103,19 +103,29 @@ class CustomizeDialog(QDialog):
         self.output = ""
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        self.package = QComboBox(editable=False)
+        # Any program of the system: the recipe's first, then (once listed, in the background) all of them.
+        self.package = QComboBox(editable=True)
         self.package.addItems(packages)
+        self.package.setInsertPolicy(QComboBox.NoInsert)
+        self.package.completer().setFilterMode(Qt.MatchContains)
+        self.package.completer().setCompletionMode(QCompleter.PopupCompletion)
+        self.which_button = QPushButton("Which program? (ask Claude)")
+        self.which_button.clicked.connect(self.which)
+        program = QHBoxLayout()
+        program.addWidget(self.package, 1)
+        program.addWidget(self.which_button)
         self.instruction = QPlainTextEdit(placeholderText="e.g. Add the line 'Hello world from Odyssey' to the output "
                                                           "of nano --version")
         self.instruction.setMaximumHeight(80)
         self.check = QLineEdit(placeholderText="optional, e.g. nano --version | grep -q 'Hello world from Odyssey'")
-        form.addRow("Program", self.package)
+        form.addRow("Program", program)
         form.addRow("Instruction", self.instruction)
         form.addRow("Check after building", self.check)
         layout.addLayout(form)
-        layout.addWidget(QLabel("Portage fetches exactly the version the build compiles; Claude may only read and edit "
-                                "that copy. It takes a few minutes and costs some cents (more for a big program).",
-                                wordWrap=True))
+        layout.addWidget(QLabel("Not sure which program? Write the instruction, then press Which program?: Claude names "
+                                "it (or says it is only a setting, which needs no change to the code). Portage fetches "
+                                "exactly the version the build compiles; Claude may only read and edit that copy. It "
+                                "takes a few minutes and costs some cents (more for a big program).", wordWrap=True))
         self.status = QLabel(wordWrap=True)
         layout.addWidget(self.status)
         self.text = QPlainTextEdit(readOnly=True)
@@ -136,6 +146,53 @@ class CustomizeDialog(QDialog):
             buttons.addWidget(b)
         layout.addLayout(buttons)
         formhelp.explain(self)
+        self.status.setText("Listing the system's programs… (seconds when it is built; a few minutes when not)")
+        self.lister = QProcess(self)
+        self.lister.setWorkingDirectory(str(ROOT))
+        self.lister.finished.connect(self._listed)
+        self.lister.start("python3", ["-u", "-m", "lfsbuilder", "packages", str(recipe_path)])
+
+    def _listed(self, code: int, _status=None) -> None:
+        names = [l for l in bytes(self.lister.readAllStandardOutput()).decode(errors="replace").splitlines()
+                 if re.fullmatch(r"[a-z0-9][a-z0-9+_.-]*/[A-Za-z0-9+_][A-Za-z0-9+_.-]*", l)]
+        if code != 0 or not names:
+            self.status.setText("Couldn't list the system's programs: the recipe's own are listed; you may type any package.")
+            return
+        current = self.package.currentText()
+        recipe_own = [self.package.itemText(i) for i in range(self.package.count())]
+        self.package.clear()
+        self.package.addItems(recipe_own + [n for n in names if n not in recipe_own])
+        self.package.setCurrentText(current)
+        self.status.setText(f"{len(names)} programs in the system: type to search (e.g. gnome-shell, nautilus, mutter).")
+
+    def which(self) -> None:
+        wish = self.instruction.toPlainText().strip()
+        if not wish:
+            self.status.setText("Write the instruction first: Claude reads it to find the program.")
+            return
+        self.which_button.setEnabled(False)
+        self.status.setText("Asking Claude which program it belongs to… (under a minute, a few cents)")
+        self.asker = QProcess(self)
+        self.asker.setWorkingDirectory(str(ROOT))
+        self.asker.setProcessChannelMode(QProcess.MergedChannels)
+        self.asker.finished.connect(self._answered)
+        self.asker.start("python3", ["-u", "-m", "lfsbuilder", "which-program", str(self.recipe_path), wish])
+
+    def _answered(self, code: int, _status=None) -> None:
+        self.which_button.setEnabled(True)
+        out = bytes(self.asker.readAllStandardOutput()).decode(errors="replace")
+        fields = dict(l.split(": ", 1) for l in out.splitlines() if l.split(": ", 1)[0] in ("kind", "package", "setting", "explanation"))
+        if code != 0 or "kind" not in fields:
+            self.status.setText("No answer: " + (out.strip().splitlines() or ["Claude Code didn't answer."])[-1])
+            return
+        if fields.get("package"):
+            self.package.setCurrentText(fields["package"])
+        kind = fields["kind"]
+        head = {"source": f"A change to the source of {fields.get('package') or 'a program'}: Write the change.",
+                "setting": f"Only a setting, no source change needed: {fields.get('setting', '')}.",
+                "extension": "An add-on or theme does it, better than changing the source.",
+                }.get(kind, "Claude can't tell which program it is.")
+        self.status.setText(f"{head}\n{fields.get('explanation', '')}")
 
     def write(self) -> None:
         instruction = self.instruction.toPlainText().strip()

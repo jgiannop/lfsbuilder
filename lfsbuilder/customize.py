@@ -153,8 +153,6 @@ def check_patch(text: str) -> str:
 
 def draft(r: Recipe, image: str, shared: Shared, package: str, instruction: str, work: Path) -> Draft:
     """Prepare the source, let Claude change it, and make the patch (nothing is kept yet)."""
-    if package not in r.packages and package not in _step_packages(r):
-        raise CustomizeError(f"{package} isn't one of the recipe's packages")
     version, a, b = prepare(image, shared, package, work)
     summary, cost = ask_claude(instruction, b)
     patch = make_patch(a, b)
@@ -186,3 +184,72 @@ def remove(recipe_path: Path, package: str) -> None:
 def _step_packages(r: Recipe) -> list[str]:
     from . import overlay
     return overlay.packages(r)
+
+
+# Which program does a wish belong to? Claude answers from the list of the system's packages.
+WHICH_SYSTEM = """You help the owner of a Linux distribution (built with lfsbuilder on Gentoo) find where a change they want belongs.
+
+You get their wish, the desktop the distribution has, and the list of every package installed in it (category/name). Answer:
+- kind "setting": the wish is a setting the program already has (a GSettings/dconf key for GNOME, a KDE config key, an Xfce xfconf property, a config file): no source change is needed. Give the setting as precisely as you can in `setting` (for GSettings: schema, key and value, like "org.gnome.desktop.interface clock-show-seconds true").
+- kind "extension": an add-on or theme the desktop supports does it, better than changing the source.
+- kind "source": it needs a change to a program's source code. Give that program's package in `package`, exactly as it appears in the list.
+- kind "unknown": you can't tell.
+Always name in `package` the package (from the list) the wish is about, when there is one, even for a setting. `explanation`: two or three plain sentences for someone who isn't a programmer: what the thing is, where it lives, and what you suggest."""
+
+WHICH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": ["setting", "extension", "source", "unknown"]},
+        "package": {"type": "string"},
+        "setting": {"type": "string"},
+        "explanation": {"type": "string"},
+    },
+    "required": ["kind", "package", "setting", "explanation"],
+}
+
+
+def system_packages(image: str) -> list[str]:
+    """Every package installed in the checkpoint `image` (category/name, sorted), from Portage's database."""
+    result = subprocess.run(["docker", "run", "--rm", image, "sh", "-c", "cd /var/db/pkg && ls -d */*"],
+                            text=True, capture_output=True, timeout=120)
+    if result.returncode != 0:
+        raise CustomizeError(f"couldn't list the system's packages: {result.stderr[-300:]}")
+    names = set()
+    for entry in result.stdout.split():
+        category, _, pf = entry.partition("/")
+        m = _VERSIONED.match(pf)
+        if m:
+            names.add(f"{category}/{m['name']}")
+    return sorted(names)
+
+
+# name-version[-rN], and a binary package's build number after it (Portage's binpkg-multi-instance: gdm-49.4-5).
+_VERSIONED = __import__("re").compile(r"^(?P<name>.+?)-[0-9][^-]*(-r[0-9]+)?(-[0-9]+)?$")
+
+
+def unversioned(cpv: str) -> str:
+    """"gnome-base/gnome-shell-49.2-r1" -> "gnome-base/gnome-shell"."""
+    category, _, pf = cpv.partition("/")
+    m = _VERSIONED.match(pf)
+    return f"{category}/{m['name']}" if m else cpv
+
+
+def which_program(wish: str, desktop: str, packages: list[str]) -> dict:
+    """Claude's answer to where the wish belongs: {kind, package, setting, explanation, cost}."""
+    prompt = (f"The owner's wish:\n\n{wish.strip()}\n\nThe desktop: {desktop or 'none (a text console)'}\n\n"
+              f"The installed packages ({len(packages)}):\n" + "\n".join(packages) + "\n")
+    command = ["claude", "-p", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+               "--output-format", "json", "--json-schema", json.dumps(WHICH_SCHEMA), "--system-prompt", WHICH_SYSTEM]
+    with tempfile.TemporaryDirectory() as empty:
+        result = subprocess.run(command, input=prompt, text=True, capture_output=True, cwd=empty, timeout=600)
+    try:
+        reply = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise CustomizeError(f"Claude Code didn't answer: {(result.stderr or result.stdout)[-500:]}") from None
+    answer = dict(reply.get("structured_output") or {})
+    if answer.get("package") and answer["package"] not in packages:
+        answer["explanation"] = (answer.get("explanation", "") +
+                                 f" (Note: {answer['package']} isn't installed in this system.)").strip()
+        answer["package"] = ""
+    answer["cost"] = float(reply.get("total_cost_usd", 0) or 0)
+    return answer

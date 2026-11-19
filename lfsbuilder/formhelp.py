@@ -115,7 +115,12 @@ FIELDS = {
         "<i>an owl in flight over the sea at night, simple flat shapes, gold and dark blue</i>. Simple, flat "
         "logos come out best."),
     # The customization window
-    "Program": "The program whose source code to change: one of the recipe's packages.",
+    "Program": (
+        "The program whose source code to change: any program of the system, not only the recipe's own (GNOME, "
+        "for example, is ~300 programs: its top bar is <i>gnome-base/gnome-shell</i>, its windows "
+        "<i>x11-wm/mutter</i>, Files <i>gnome-base/nautilus</i>, Settings <i>gnome-base/gnome-control-center</i>, "
+        "the login screen <i>gnome-base/gdm</i>). Type to search.<br><br>Not sure? Write the instruction and press "
+        "<b>Which program?</b>: Claude names it, or tells you it is only a setting."),
     "Instruction": (
         "What to change, in words, as you would tell a programmer: <i>Add the line 'Hello world from Odyssey' "
         "to the output of nano --version</i>. Be specific about where and what."),
@@ -232,6 +237,10 @@ OPTIONS = {
     "Show the change": "Show the patch (the exact lines changed) of the selected customization.",
     "Draw": "Ask Claude for the logo (a few cents, about a minute).",
     "Use it": "Use this logo: it is picked in Logo. Save, then Check or Build.",
+    "Which program? (ask Claude)": (
+        "Claude reads your instruction and the list of the system's programs, and says where the change belongs: "
+        "a program's source (it picks the program for you), a setting the program already has (no compiling), "
+        "or an add-on. A few cents, under a minute."),
     "Write the change": "Fetch the program's source and let Claude change it (a few minutes, some cents). Nothing is kept yet.",
     "Keep it": "Keep the change: saved beside the recipe; Build compiles the program with it.",
     "Throw it away": "Close without keeping anything.",

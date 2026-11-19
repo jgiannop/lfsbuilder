@@ -109,6 +109,50 @@ def customize_package(r: recipes.Recipe, package: str, instruction: str, check: 
     return 0
 
 
+def system_package_list(r: recipes.Recipe) -> list[str] | None:
+    """Every package the recipe's system has (category/name): from its last checkpoint when it is
+    built; else what Check says would be installed, with what the starter system has. Kept in
+    work/customize/<recipe>/packages-<fingerprint>.txt (Check takes minutes)."""
+    p = planned(r)
+    if p is None:
+        return None
+    cache = WORK / "customize" / r.stem / f"packages-{p[-1].fingerprint[:16]}.txt"
+    if cache.is_file():
+        return cache.read_text().split()
+    if runner.image_exists(p[-1].image):
+        names = customize.system_packages(p[-1].image)
+    else:
+        print("the recipe isn't fully built: asking Portage what it installs (2–3 min)", flush=True)
+        if runner.run(p[:1], gentoo.stage3_image(stage3_path(r), stage3_image(r)), shared(r), WORK / f"build-{r.stem}" / "logs", quiet=True):
+            return None
+        result = checks.check(r, p[0].image, shared(r))
+        names = sorted(set(customize.system_packages(p[0].image)) |
+                       {customize.unversioned(c) for c in [*result.binary, *result.compiled]})
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text("\n".join(names) + "\n")
+    return names
+
+
+def which_program(r: recipes.Recipe, wish: str) -> int:
+    """Where a wish belongs (a setting, an extension, or a program's source), asked of Claude with
+    the system's package list."""
+    names = system_package_list(r)
+    if names is None:
+        return 1
+    desktop = next((d for d, s in (("GNOME", "gdm"), ("KDE Plasma", "sddm"), ("Xfce", "lightdm")) if s in r.services), "")
+    print(f"asking Claude where it belongs ({len(names)} packages in the system)", flush=True)
+    try:
+        answer = customize.which_program(wish, desktop, names)
+    except (customize.CustomizeError, subprocess.TimeoutExpired) as error:
+        print(f"no answer: {error}", file=sys.stderr)
+        return 1
+    print(f"kind: {answer.get('kind', 'unknown')}")
+    print(f"package: {answer.get('package', '')}")
+    print(f"setting: {answer.get('setting', '')}")
+    print(f"explanation: {answer.get('explanation', '')} (${answer['cost']:.2f})", flush=True)
+    return 0
+
+
 def draw_logo(name: str, description: str, label: str, replace: bool) -> int:
     """A logo drawn by Claude from the description (logo.py), written to branding/<name>/, and its
     pictures drawn with the label, to look at before choosing it."""
@@ -497,11 +541,14 @@ def main(argv: list[str] | None = None) -> int:
     draw.add_argument("description", help="what the logo should show")
     draw.add_argument("--label", default="Argo Linux", help="the words beside the logo in the pictures")
     draw.add_argument("--replace", action="store_true", help="replace branding/NAME/ if it is there")
-    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish", "branding", "customize"):
+    for name in ("prepare", "plan", "check", "build", "boot", "iso", "publish", "branding", "customize", "packages",
+                 "which-program"):
         command = sub.add_parser(name)
         command.add_argument("recipe", type=Path)
         if name == "boot":
             command.add_argument("--console", action="store_true", help="stay in the system's console to log in (Ctrl-A X quits)")
+        if name == "which-program":
+            command.add_argument("wish", help="what you want changed, in words")
         if name == "customize":
             command.add_argument("package", help="the package to change (one of the recipe's)")
             command.add_argument("instruction", help="what to change, in words")
@@ -537,6 +584,14 @@ def main(argv: list[str] | None = None) -> int:
         draw_pictures(r, again=True)
         return 0
     draw_pictures(r)
+    if args.command == "packages":
+        names = system_package_list(r)
+        if names is None:
+            return 1
+        print("\n".join(names))
+        return 0
+    if args.command == "which-program":
+        return which_program(r, args.wish)
     if args.command == "customize":
         return customize_package(r, args.package, args.instruction, args.check, args.keep)
     if args.command == "prepare":
