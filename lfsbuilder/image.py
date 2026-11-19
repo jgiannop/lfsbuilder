@@ -125,6 +125,8 @@ def disk(tools, rootfs: Path, out: Path, size_gb: int) -> None:
     out.unlink(missing_ok=True)
     tools.run("sh", "-c", f'truncate -s {int(size_gb)}G "$1" && mke2fs -q -t ext4 -L root -d "$2" "$1"',
               "sh", tools.inside(out), tools.inside(rootfs))
+    if problem := root_problem(*ext4_root(tools, out)):
+        raise RuntimeError(f"the disk image is wrong: {problem}")
 
 
 def volume_id(r: Recipe) -> str:
@@ -192,9 +194,92 @@ def iso(tools, rootfs: Path, kernel: Path, initramfs: Path, work: Path, out: Pat
     (tree / "boot" / "grub" / "argo.png").write_bytes(GRUB_BACKGROUND.read_bytes())
     tools.run("sh", "-c", 'sqfstar -quiet -no-progress -comp zstd -root-uid 0 -root-gid 0 -root-mode 0755 "$1" < "$2"', "sh",
               tools.inside(tree / "LiveOS" / "squashfs.img"), tools.inside(rootfs))
+    if problem := root_problem(*squashfs_root(tools, tree / "LiveOS" / "squashfs.img")):
+        raise RuntimeError(f"the live system's SquashFS is wrong: {problem}")
     out.unlink(missing_ok=True)
     tools.run("grub-mkrescue", "--quiet", "-o", tools.inside(out), tools.inside(tree), "--", "-volid", volume, capture=True)
     subprocess.run(["rm", "-rf", str(tree)], check=True)
+
+
+def root_problem(uid: int, gid: int, mode: int) -> str | None:
+    """What is wrong with a system's root directory, if anything: it must be
+    root's and writable by root alone (Gentoo's is 0555, ours 0755). One that
+    isn't is a hole (anyone could replace /etc), and systemd-tmpfiles refuses
+    every path under it."""
+    if (uid, gid) != (0, 0):
+        return f"/ is owned by {uid}:{gid}, not root"
+    if mode & 0o022:
+        return f"/ has mode {mode:04o}: others can write to it"
+    return None
+
+
+def squashfs_root(tools, img: Path) -> tuple[int, int, int]:
+    """The owner and mode of a SquashFS's root directory (unsquashfs's listing)."""
+    listing = tools.run("unsquashfs", "-lln", "-max-depth", "0", tools.inside(img), capture=True).stdout
+    return parse_unsquashfs_root(listing)
+
+
+def parse_unsquashfs_root(listing: str) -> tuple[int, int, int]:
+    """`drwxr-xr-x 0/0  270 2026-11-18 22:26 squashfs-root` -> (0, 0, 0o755)."""
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and parts[-1] == "squashfs-root" and parts[0].startswith("d"):
+            uid, gid = (int(n) for n in parts[1].split("/"))
+            return uid, gid, _mode(parts[0][1:])
+    raise ValueError(f"no root directory in unsquashfs's listing: {listing[:200]!r}")
+
+
+def _mode(letters: str) -> int:
+    """`rwxr-xr-x` -> 0o755 (the special bits aren't needed here)."""
+    return sum(1 << (8 - i) for i, c in enumerate(letters[:9]) if c != "-")
+
+
+def ext4_root(tools, img: Path, offset: int = 0) -> tuple[int, int, int]:
+    """The owner and mode of the root directory of the ext4 file system at
+    `offset` bytes into `img` (debugfs, which reads it without mounting)."""
+    target = tools.inside(img) + (f"?offset={offset}" if offset else "")
+    return parse_debugfs_root(tools.run("debugfs", "-R", "stat /", target, capture=True).stdout)
+
+
+def parse_debugfs_root(stat: str) -> tuple[int, int, int]:
+    """debugfs's `stat /`: `Mode:  0755` and `User:     0   Group:     0`."""
+    mode = re.search(r"\bMode:\s+0?([0-7]+)", stat)
+    owner = re.search(r"\bUser:\s+(\d+)\s+Group:\s+(\d+)", stat)
+    if not (mode and owner):
+        raise ValueError(f"debugfs's answer has no mode or owner: {stat[:200]!r}")
+    return int(owner[1]), int(owner[2]), int(mode[1], 8)
+
+
+# GPT partition types of a Linux root: the installer's (8304, x86-64 root) and plain Linux data (8300).
+LINUX_ROOT_TYPES = {"4f68bce3-e8cd-4db1-96e7-fbcaf984b709", "0fc63daf-8483-4772-8e79-3d69d8477de4"}
+
+
+def root_partition_offset(disk: Path) -> int:
+    """Where the root partition starts in a disk with a GPT (bytes): the last
+    partition of a Linux root type, as the installer makes it."""
+    with disk.open("rb") as f:
+        f.seek(512)
+        header = f.read(92)
+        if header[:8] != b"EFI PART":
+            raise ValueError(f"{disk} has no GPT")
+        entries_lba, count, size = struct.unpack_from("<QII", header, 72)
+        f.seek(entries_lba * 512)
+        table = f.read(count * size)
+    start = None
+    for i in range(count):
+        entry = table[i * size:(i + 1) * size]
+        kind = _guid(entry[:16])
+        if kind in LINUX_ROOT_TYPES:
+            start = struct.unpack_from("<Q", entry, 32)[0]
+    if start is None:
+        raise ValueError(f"{disk} has no Linux root partition")
+    return start * 512
+
+
+def _guid(raw: bytes) -> str:
+    """A GPT GUID (mixed-endian on disk) as text."""
+    a, b, c = struct.unpack_from("<IHH", raw)
+    return f"{a:08x}-{b:04x}-{c:04x}-{raw[8:10].hex()}-{raw[10:16].hex()}"
 
 
 GRUB_BACKGROUND = Path(__file__).resolve().parent.parent / "branding" / "argo-grub-1024x768.png"

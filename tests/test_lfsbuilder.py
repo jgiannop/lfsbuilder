@@ -265,6 +265,39 @@ class GraphicalInstaller(unittest.TestCase):
         self.assertIn("chown 0:0 /", live)
         self.assertIn("chmod 0755 /", live)
 
+    def test_the_root_directory_is_checked(self):
+        self.assertIsNone(image.root_problem(0, 0, 0o755))
+        self.assertIsNone(image.root_problem(0, 0, 0o555))  # Gentoo's own
+        self.assertIn("owned by 1000:1000", image.root_problem(1000, 1000, 0o755))
+        self.assertIn("others can write", image.root_problem(0, 0, 0o777))
+        # The tools' answers, as unsquashfs 4.6 and debugfs 1.47 give them.
+        bad = "drwxrwxrwx 1000/1000               3 2026-11-19 06:40 squashfs-root\n"
+        self.assertEqual(image.parse_unsquashfs_root(bad), (1000, 1000, 0o777))
+        good = "drwxr-xr-x 0/0                     270 2026-11-18 22:26 squashfs-root\n"
+        self.assertEqual(image.parse_unsquashfs_root(good), (0, 0, 0o755))
+        stat = ("Inode: 2   Type: directory    Mode:  0555   Flags: 0x80000\n"
+                "Generation: 0    Version: 0x00000000:00000002\n"
+                "User:     0   Group:     0   Project:     0   Size: 4096\n")
+        self.assertEqual(image.parse_debugfs_root(stat), (0, 0, 0o555))
+        with self.assertRaises(ValueError):
+            image.parse_debugfs_root("debugfs: Bad magic number")
+        # The root partition of a GPT like the installer's: BIOS boot, ESP, then root (8304) at sector 20480.
+        types = [("21686148-6449-6e6f-744e-656564454649", 2048), ("c12a7328-f81f-11d2-ba4b-00a0c93ec93b", 4096),
+                 ("4f68bce3-e8cd-4db1-96e7-fbcaf984b709", 20480)]
+        disk = bytearray(34 * 512)
+        disk[512:512 + 92] = b"EFI PART" + bytes(64) + struct.pack("<QII", 2, 128, 128)
+        for i, (guid, start) in enumerate(types):
+            a, b, c, d, e = guid.split("-")
+            raw = struct.pack("<IHH", int(a, 16), int(b, 16), int(c, 16)) + bytes.fromhex(d + e)
+            disk[1024 + i * 128:1024 + i * 128 + 40] = raw + bytes(16) + struct.pack("<QQ", start, start + 100)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "disk.img"
+            path.write_bytes(disk)
+            self.assertEqual(image.root_partition_offset(path), 20480 * 512)
+            path.write_bytes(bytes(34 * 512))
+            with self.assertRaises(ValueError):
+                image.root_partition_offset(path)
+
     def test_only_what_was_tested_is_offered(self):
         r = recipe.load(RECIPES / "xfce.toml")
         partition = calamares.modules(r)["partition.conf"]

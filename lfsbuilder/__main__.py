@@ -269,6 +269,10 @@ def iso(r: recipes.Recipe) -> int:
         for line in log.read_text(errors="replace").splitlines()[-30:]:
             print(f"  | {line}", file=sys.stderr)
         return 1
+    if problem := image.root_problem(*image.ext4_root(tools(), installed, image.root_partition_offset(installed))):
+        print(f"the installed system is wrong: {problem} (installed.img is kept, to look into)", file=sys.stderr)
+        return 1
+    print("the installed system's / is root's", flush=True)
     for firmware in firmwares:
         log, screenshot = out / "logs" / f"boot-installed-{firmware}.log", out / f"screen-installed-{firmware}.png"
         if image.boot_test(None, None, installed, log, screenshot, uefi=firmware == "uefi"):
